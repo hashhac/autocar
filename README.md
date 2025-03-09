@@ -1,1 +1,1 @@
-# [*;::;*] To those who know let them be remeberd
+# [\*;::;\*] To those who know let them be remeberd
