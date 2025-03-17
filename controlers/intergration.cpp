@@ -30,79 +30,32 @@ private:
     double integral_;
 };
 
-// IR Sensor Class
+// Single IR Sensor Class
 class IRSensor {
 private:
-    int irSensorPin1;         // Front IR sensor pin
-
-    // Calibration constants
-    float calibrated_a = 46161.0;
-    float calibrated_b = -1.302;
+    int sensorPin;
+    const char* sensorName;
 
 public:
-    // Constructor - initialize with sensor pins
-    IRSensor(int pin1 = A4, int pin2 = A5) {
-        irSensorPin1 = pin1;
-        serialEnabled = false;
+    // Constructor - initialize with sensor pin
+    IRSensor(int pin, const char* name) {
+        sensorPin = pin;
+        sensorName = name;
     }
     
-    // Destructor - cleanup
-    ~IRSensor() {
-        if (serialEnabled) {
-            Serial.end();
-        }
+    // Initialize sensor
+    void begin() {
+        pinMode(sensorPin, INPUT);
     }
     
-    // Initialize sensors and serial communication
-    void begin(int baudRate = 9600) {
-        pinMode(irSensorPin1, INPUT);
-        pinMode(irSensorPin2, INPUT);
-        Serial.begin(baudRate);
-        serialEnabled = true;
+    // Read raw analog value from sensor
+    int readRawValue() {
+        return analogRead(sensorPin);
     }
     
-    // Read raw analog value from front sensor
-    int readFrontRawValue() {
-        return analogRead(irSensorPin1);
-    }
-    
-    // Read raw analog value from back sensor
-    int readBackRawValue() {
-        return analogRead(irSensorPin2);
-    }
-    
-    // Get calculated distance from front sensor using calibrated formula
-    float getFrontDistance() {
-        int signalADC = readFrontRawValue();
-        return calibrated_a * pow(signalADC, calibrated_b);
-    }
-    
-    // Get calculated distance from back sensor using calibrated formula
-    float getBackDistance() {
-        int signalADC = readBackRawValue();
-        return calibrated_a * pow(signalADC, calibrated_b);
-    }
-    
-    // Print sensor values through serial
-    void printSensorValues() {
-        if (!serialEnabled) return;
-        
-        int frontVal = readFrontRawValue();
-        int backVal = readBackRawValue();
-        float frontDist = getFrontDistance();
-        float backDist = getBackDistance();
-        
-        Serial.print("Front Sensor (A4): Raw=");
-        Serial.print(frontVal);
-        Serial.print(", Distance=");
-        Serial.print(frontDist);
-        Serial.println(" cm");
-        
-        Serial.print("Back Sensor (A5): Raw=");
-        Serial.print(backVal);
-        Serial.print(", Distance=");
-        Serial.print(backDist);
-        Serial.println(" cm");
+    // Get sensor name
+    const char* getName() {
+        return sensorName;
     }
 };
 
@@ -196,7 +149,8 @@ public:
 };
 
 // Global variables
-IRSensor sensors(A4, A5);  // Front sensor on A4, Back sensor on A5
+IRSensor sensor1(A4, "Front");  // Front sensor on A4
+IRSensor sensor2(A5, "Back");   // Back sensor on A5
 Movement robot;
 PIDController pid(0.8, 0.1, 0.05);
 
@@ -211,9 +165,20 @@ const float DT = 0.05;  // 50ms loop time
 unsigned long lastTime = 0;
 int currentDirection = 0;  // 0: stop, 1: forward, -1: backward
 
+// Convert raw sensor value to distance using linearization
+float calculateDistance(int rawValue) {
+    // Apply linearization: subtract 61 and divide by 4261.4
+    return (rawValue - 61) / 4261.4;
+}
+
 void setup() {
-    // Initialize the sensors with serial communication
-    sensors.begin(115200);  // Higher baud rate for more responsive feedback
+    // Initialize serial communication
+    Serial.begin(115200);
+    
+    // Initialize the sensors
+    sensor1.begin();
+    sensor2.begin();
+    
     Serial.println("Robot initialized");
     Serial.println("Front sensor on A4, Back sensor on A5");
     delay(1000);  // Give time for serial to initialize
@@ -226,12 +191,28 @@ void loop() {
     if (currentTime - lastTime >= DT * 1000) {
         lastTime = currentTime;
         
-        // Read sensor distances
-        float frontDistance = sensors.getFrontDistance();
-        float backDistance = sensors.getBackDistance();
+        // Read raw sensor values
+        int frontRawValue = sensor1.readRawValue();
+        int backRawValue = sensor2.readRawValue();
+        
+        // Calculate distances with linearization
+        float frontDistance = calculateDistance(frontRawValue);
+        float backDistance = calculateDistance(backRawValue);
         
         // Print sensor values
-        sensors.printSensorValues();
+        Serial.print(sensor1.getName());
+        Serial.print(" Sensor: Raw=");
+        Serial.print(frontRawValue);
+        Serial.print(", Distance=");
+        Serial.print(frontDistance);
+        Serial.println(" cm");
+        
+        Serial.print(sensor2.getName());
+        Serial.print(" Sensor: Raw=");
+        Serial.print(backRawValue);
+        Serial.print(", Distance=");
+        Serial.print(backDistance);
+        Serial.println(" cm");
         
         // Decision logic for movement
         if (frontDistance < FRONT_SAFETY_DISTANCE) {
