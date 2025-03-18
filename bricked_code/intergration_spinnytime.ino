@@ -1,35 +1,6 @@
 #include <Arduino.h>
 #include <Servo.h>
 
-// PID Controller Class
-class PIDController {
-public:
-    PIDController(double kp, double ki, double kd)
-        : kp_(kp), ki_(ki), kd_(kd), prev_error_(0.0), integral_(0.0) {}
-
-    double calculate(double setpoint, double measured_value, double dt) {
-        double error = setpoint - measured_value;
-        integral_ += error * dt;
-        double derivative = (error - prev_error_) / dt;
-        double output = kp_ * error + ki_ * integral_ + kd_ * derivative;
-        prev_error_ = error;
-        return output;
-    }
-
-    void setTunings(double kp, double ki, double kd) {
-        kp_ = kp;
-        ki_ = ki;
-        kd_ = kd;
-    }
-
-private:
-    double kp_;
-    double ki_;
-    double kd_;
-    double prev_error_;
-    double integral_;
-};
-
 // Single IR Sensor Class
 class IRSensor {
 private:
@@ -152,23 +123,21 @@ public:
 IRSensor sensor1(A4, "Front");  // Front sensor on A4
 IRSensor sensor2(A5, "Back");   // Back sensor on A5
 Movement robot;
-PIDController pid(0.8, 0.1, 0.05);
 
 // Constants
-const float FRONT_SAFETY_DISTANCE = 20.0;  // cm
-const float BACK_SAFETY_DISTANCE = 20.0;   // cm
-const float TARGET_DISTANCE = 30.0;        // cm
-const int MAX_SPEED = 200;
-const int MIN_SPEED = 50;
-const float DT = 0.05;  // 50ms loop time
+const float FRONT_SAFETY_DISTANCE = 0.05;  // Adjusted for reciprocal values
+const float BACK_SAFETY_DISTANCE = 0.05;   // Adjusted for reciprocal values
+const float TARGET_DISTANCE = 0.03;        // Adjusted for reciprocal values
+const int FIXED_SPEED = 250;              // Fixed speed for movement
+const float DT = 0.05;                    // 50ms loop time
 
 unsigned long lastTime = 0;
 int currentDirection = 0;  // 0: stop, 1: forward, -1: backward
 
-// Convert raw sensor value to distance using linearization
+// Convert raw sensor value to distance using linearization and take reciprocal
 float calculateDistance(int rawValue) {
-    // Apply linearization: subtract 61 and divide by 4261.4
-    return (rawValue - 61) / 4261.4;
+    // Apply linearization: subtract 61, divide by 4261.4, then take reciprocal
+    return (1.0 / ((rawValue - 61) / 4261.4));
 }
 
 void setup() {
@@ -181,6 +150,8 @@ void setup() {
     
     Serial.println("Robot initialized");
     Serial.println("Front sensor on A4, Back sensor on A5");
+    Serial.println("Using reciprocal distance calculation");
+    Serial.println("Fixed speed movement: 250");
     delay(1000);  // Give time for serial to initialize
 }
 
@@ -195,7 +166,7 @@ void loop() {
         int frontRawValue = sensor1.readRawValue();
         int backRawValue = sensor2.readRawValue();
         
-        // Calculate distances with linearization
+        // Calculate distances with linearization and reciprocal
         float frontDistance = calculateDistance(frontRawValue);
         float backDistance = calculateDistance(backRawValue);
         
@@ -204,66 +175,49 @@ void loop() {
         Serial.print(" Sensor: Raw=");
         Serial.print(frontRawValue);
         Serial.print(", Distance=");
-        Serial.print(frontDistance);
-        Serial.println(" cm");
+        Serial.print(frontDistance, 6);  // Print with 6 decimal places for reciprocal values
+        Serial.println(" (reciprocal units)");
         
         Serial.print(sensor2.getName());
         Serial.print(" Sensor: Raw=");
         Serial.print(backRawValue);
         Serial.print(", Distance=");
-        Serial.print(backDistance);
-        Serial.println(" cm");
+        Serial.print(backDistance, 6);  // Print with 6 decimal places for reciprocal values
+        Serial.println(" (reciprocal units)");
         
         // Decision logic for movement
-        if (frontDistance < FRONT_SAFETY_DISTANCE) {
+        if (frontDistance > FRONT_SAFETY_DISTANCE) {  // Note: Comparison is reversed with reciprocal values
             // Front obstacle detected, go backward
             Serial.print("Front obstacle detected at ");
-            Serial.print(frontDistance);
-            Serial.println(" cm! Moving backward.");
+            Serial.print(frontDistance, 6);
+            Serial.println("! Moving backward.");
             currentDirection = -1;
-        } else if (backDistance < BACK_SAFETY_DISTANCE) {
+        } else if (backDistance > BACK_SAFETY_DISTANCE) {  // Note: Comparison is reversed with reciprocal values
             // Back obstacle detected, go forward
             Serial.print("Back obstacle detected at ");
-            Serial.print(backDistance);
-            Serial.println(" cm! Moving forward.");
+            Serial.print(backDistance, 6);
+            Serial.println("! Moving forward.");
             currentDirection = 1;
-        } else if (frontDistance < TARGET_DISTANCE && backDistance > TARGET_DISTANCE) {
+        } else if (frontDistance > TARGET_DISTANCE && backDistance < TARGET_DISTANCE) {  // Note: Comparisons reversed
             // Too close to front, too far from back - move backward
             currentDirection = -1;
             Serial.println("Adjusting position - moving backward");
-        } else if (frontDistance > TARGET_DISTANCE && backDistance < TARGET_DISTANCE) {
+        } else if (frontDistance < TARGET_DISTANCE && backDistance > TARGET_DISTANCE) {  // Note: Comparisons reversed
             // Too far from front, too close to back - move forward
             currentDirection = 1;
             Serial.println("Adjusting position - moving forward");
-        } else if (abs(frontDistance - TARGET_DISTANCE) < 5.0 && 
-                  abs(backDistance - TARGET_DISTANCE) < 5.0) {
+        } else if (abs(frontDistance - TARGET_DISTANCE) < 0.01 && 
+                  abs(backDistance - TARGET_DISTANCE) < 0.01) {
             // Both sensors close to target distance
             currentDirection = 0;
             Serial.println("Optimal position reached - stopping");
         }
         
-        // Calculate PID control based on current direction and distance
-        double setpoint = TARGET_DISTANCE;
-        double measured = (currentDirection == 1) ? frontDistance : backDistance;
-        double controlSignal = pid.calculate(setpoint, measured, DT);
-        
-        // Map PID output to motor speed
-        int speed = constrain(abs(controlSignal), MIN_SPEED, MAX_SPEED);
-        
-        Serial.print("PID Control: Setpoint=");
-        Serial.print(setpoint);
-        Serial.print(", Measured=");
-        Serial.print(measured);
-        Serial.print(", Output=");
-        Serial.print(controlSignal);
-        Serial.print(", Speed=");
-        Serial.println(speed);
-        
-        // Apply movement based on direction
+        // Apply movement based on direction with fixed speed
         if (currentDirection == 1) {
-            robot.forward(speed);
+            robot.forward(FIXED_SPEED);
         } else if (currentDirection == -1) {
-            robot.reverse(speed);
+            robot.reverse(FIXED_SPEED);
         } else {
             robot.stop();
         }

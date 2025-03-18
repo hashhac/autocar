@@ -16,7 +16,6 @@ private:
     Servo left_rear_motor;
     Servo right_rear_motor;
     Servo right_font_motor;
-    Servo turret_motor;
 
     // Default center value for servos
     const int CENTER_VALUE = 1500;
@@ -24,6 +23,12 @@ private:
 public:
     // Constructor - initialize and enable motors
     Movement() {
+        // Explicitly set pins as OUTPUT before attaching servos
+        pinMode(left_front, OUTPUT);
+        pinMode(left_rear, OUTPUT);
+        pinMode(right_rear, OUTPUT);
+        pinMode(right_front, OUTPUT);
+        
         enable_motors();
     }
 
@@ -38,6 +43,15 @@ public:
         left_rear_motor.attach(left_rear);
         right_rear_motor.attach(right_rear);
         right_font_motor.attach(right_front);
+        
+        // Initialize to stopped position
+        left_font_motor.writeMicroseconds(CENTER_VALUE);
+        left_rear_motor.writeMicroseconds(CENTER_VALUE);
+        right_rear_motor.writeMicroseconds(CENTER_VALUE);
+        right_font_motor.writeMicroseconds(CENTER_VALUE);
+        
+        // Small delay after initialization to allow servos to stabilize
+        delay(100);
     }
 
     // Disable all motors
