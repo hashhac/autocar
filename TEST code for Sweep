@@ -51,6 +51,14 @@ const int ECHO_PIN = 49;
 // Anything over 400 cm (23200 us pulse) is "out of range". Hit:If you decrease to this the ranging sensor but the timeout is short, you may not need to read up to 4meters.
 const unsigned int MAX_DIST = 23200;
 
+
+int sweep_increment = 5; //Factors of 180 degrees
+int sweep_min = 45;
+int sweep_max = 135;
+int sweep_range = sweep_max-sweep_min;
+int array_size = (sweep_range/sweep_increment) + 1;
+
+
 Servo left_font_motor;  // create servo object to control Vex Motor Controller 29
 Servo left_rear_motor;  // create servo object to control Vex Motor Controller 29
 Servo right_rear_motor;  // create servo object to control Vex Motor Controller 29
@@ -161,7 +169,9 @@ STATE running() {
 }
 
 STATE test() {
-    Sweep();
+    float dist[array_size];
+    Sweep(dist);
+    detectCorner(dist);
     return STOPPED;
 }
 
@@ -283,74 +293,77 @@ boolean is_battery_voltage_OK()
 }
 #endif
 
-void Sweep() {
-bool loop = true;
-  float dist = 99999;
-  float min_dist[3] = {9999, 9999, 9999};
+void Sweep(float* dist) {
+  bool loop = true;
+  // float dist[array_size];
+  int count = 0;
+  // float min_dist[3] = {9999, 9999, 9999};
+  // int best_pos[3] = {-1, -1, -1};
 
-  int best_pos[3] = {-1, -1, -1};
 
-  while(loop) {
     myservo.write(0);
     delay(25);
-    for (pos = 0; pos <= 180; pos += 5) { // goes from 0 degrees to 180 degrees
+    for (pos = sweep_min; pos <= sweep_max; pos += sweep_increment) { // goes from 0 degrees to 180 degrees
     // in steps of 1 degree
     myservo.write(pos);              // tell servo to go to position in variable 'pos'
     SerialCom->print(pos);
     SerialCom->print(": ");
-    dist = HC_SR04_range();
-
-    // minimum distance and position filtering
-    if ((dist < min_dist[1]) && (dist != -1)){
-      min_dist[3] = min_dist[2];
-      min_dist[2] = min_dist[1];
-      min_dist[1] = dist;
-
-      best_pos[3] = best_pos[2];
-      best_pos[2] = best_pos[1];
-      best_pos[1] = pos;
-    } else if ((dist < min_dist[2]) && (dist != -1)){
-      min_dist[3] = min_dist[2];
-      min_dist[2] = dist;
-
-      best_pos[3] = best_pos[2];
-      best_pos[2] = pos;
-    } else if ((dist < min_dist[2]) && (dist != -1)){
-      min_dist[3] = dist;
-      best_pos[3] = pos;
-    }
-    
-
-    SerialCom->print("min dist: ");
-    SerialCom->println(min_dist[1]);
-    SerialCom->print("min 2dist: ");
-    SerialCom->println(min_dist[2]);
-    SerialCom->print("min 3dist: ");
-    SerialCom->println(min_dist[3]);
+    dist[count] = HC_SR04_range();
+    // SerialCom->print(dist[count]);
+    count++;
     delay(200);                       // waits 15ms for the servo to reach the position
-  
     }
-  // error filter
-  if (abs(min_dist[2] - min_dist[1]) > abs(min_dist[3] - min_dist[2])) {
-    min_dist[1] = min_dist[2];
-    best_pos[1] = best_pos[2];
-  }
 
-  // Printing Best Values
-    SerialCom->print("min_dist: ");
-  SerialCom->println(min_dist[1]);
-
-  SerialCom->print("best_pos: ");
-  SerialCom->println(best_pos[1]);
-
-  // for (pos = 180; pos >= 0; pos -= 1) { // goes from 180 degrees to 0 degrees
-  //   myservo.write(pos);              // tell servo to go to position in variable 'pos'
-  //   delay(15);                       // waits 15ms for the servo to reach the position
-  // }
     myservo.write(90);
-    loop = false;
-  }
+
+
   delay(2000);
+}
+
+
+void detectCorner(float* array) {
+  // int array_size = (180/sweep_increment) + 1;
+  float pos[array_size];
+  float prev_diff;
+  float current_diff;
+  float max_diff;
+  int index = 0;
+
+  // for (int k = 0; k < array_size; k++) {
+  //   SerialCom->print("Array value: ");
+  //   SerialCom->println(array[k]);
+  // }
+
+
+  prev_diff = 0;
+  max_diff = prev_diff;
+  for (int j = 1; j < array_size; j++) {
+    if ((array[j] != -1) && (array[j-1] != -1)) {
+    current_diff = abs(array[j] - array[j-1]);
+    
+    SerialCom->print(j);
+    SerialCom->print(": ");
+    
+    SerialCom->print("Current_diff: ");
+    SerialCom->println(current_diff);
+    if ((current_diff < 0.4*array[j]) || (current_diff < 0.4*array[j-1])) {
+    if (current_diff > max_diff) {
+      max_diff = current_diff;
+      index = j;
+    }
+    }
+    prev_diff = current_diff;
+    }
+  }
+
+
+  float found_angle = sweep_min+index*sweep_increment-0.5*sweep_increment;
+  SerialCom->print("Suspected corner at: ");
+  SerialCom->println(found_angle);
+  SerialCom->print("Maximum Difference: ");
+  SerialCom->println(max_diff);
+
+  myservo.write(found_angle);
 }
 
 #ifndef NO_HC-SR04
