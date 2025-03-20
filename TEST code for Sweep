@@ -51,7 +51,11 @@ const int ECHO_PIN = 49;
 // Anything over 400 cm (23200 us pulse) is "out of range". Hit:If you decrease to this the ranging sensor but the timeout is short, you may not need to read up to 4meters.
 const unsigned int MAX_DIST = 23200;
 
+// IR Sensor
+const int IR_LeftPIN = 4;
+const int IR_RightPIN = 5;
 
+// Sweep
 int sweep_increment = 5; //Factors of 180 degrees
 int sweep_min = 45;
 int sweep_max = 135;
@@ -169,9 +173,10 @@ STATE running() {
 }
 
 STATE test() {
-    float dist[array_size];
-    Sweep(dist);
-    detectCorner(dist);
+    // float dist[array_size];
+    // Sweep(dist);
+    // detectCorner(dist);
+    orientate();
     return STOPPED;
 }
 
@@ -364,6 +369,36 @@ void detectCorner(float* array) {
   SerialCom->println(max_diff);
 
   myservo.write(found_angle);
+
+}
+
+float med_ir_dist(int ir_pin) {
+  int analog_value;
+  float distance;
+
+  analog_value = analogRead(ir_pin);
+  distance = (2118.6)/(analog_value - 20.072);
+
+  return distance;
+}
+
+void orientate() {
+  float tolerance = 1; 
+  float ir_left, ir_right;
+  Serial
+
+  do {
+    ir_left = med_ir_dist(IR_LeftPIN);
+    ir_right = med_ir_dist(IR_RightPIN);
+    if (ir_left > ir_right) {
+      cw();
+    } else {
+      ccw();
+    }  
+    delay(50);
+  } while ((abs(ir_left - ir_right) >= tolerance));
+    
+  stop();
 }
 
 #ifndef NO_HC-SR04
