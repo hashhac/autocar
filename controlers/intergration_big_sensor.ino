@@ -149,6 +149,28 @@ void cw(int speed) {
   Serial.println(speed);
 }
 
+// NEW: Controlled movement with steering
+void forwardWithSteering(int baseSpeed, int steeringAmount) {
+  // Positive steeringAmount = right turn
+  // Negative steeringAmount = left turn
+  int leftSpeed = baseSpeed + steeringAmount;
+  int rightSpeed = baseSpeed - steeringAmount;
+  
+  // Constrain speeds to safe ranges
+  leftSpeed = constrain(leftSpeed, -baseSpeed, baseSpeed);
+  rightSpeed = constrain(rightSpeed, -baseSpeed, baseSpeed);
+  
+  left_font_motor.writeMicroseconds(1500 + leftSpeed);
+  left_rear_motor.writeMicroseconds(1500 + leftSpeed);
+  right_rear_motor.writeMicroseconds(1500 - rightSpeed);
+  right_font_motor.writeMicroseconds(1500 - rightSpeed);
+  
+  Serial.print("Forward with steering: Base=");
+  Serial.print(baseSpeed);
+  Serial.print(", Steering=");
+  Serial.println(steeringAmount);
+}
+
 void strafe_left(int speed) {
   left_font_motor.writeMicroseconds(1500 - speed);
   left_rear_motor.writeMicroseconds(1500 + speed);
@@ -188,10 +210,14 @@ const float WALL_THRESHOLD = 15.0;  // Very close wall threshold
 const unsigned long TURN_DURATION = 800;
 const unsigned long PROXIMITY_CHECK_INTERVAL = 150; // More frequent checks
 
-// Scanning angles
-const int NUM_ANGLES = 5;
-const int SCAN_ANGLES[NUM_ANGLES] = {0, 45, 90, 135, 180};
+// ENHANCED: More scanning angles (9 instead of 5)
+const int NUM_ANGLES = 9;
+const int SCAN_ANGLES[NUM_ANGLES] = {0, 30, 60, 75, 90, 105, 120, 150, 180};
 const int MAP_ANGLES[3] = {0, 90, 180}; // Left, Center, Right angles for mapping
+
+// Control loop parameters
+const float STEERING_GAIN = 2.0;       // Proportional control gain
+const int MAX_STEERING_CORRECTION = 100; // Maximum steering correction
 
 // State variables
 int currentScanIndex = 0;
@@ -205,6 +231,7 @@ bool completeScanRequired = true;  // Start with a full scan
 bool isTurning = false;
 bool turningLeft = false;
 bool emergencyStop = false;
+bool headingCorrection = false;    // Flag for heading correction mode
 unsigned long turnStartTime = 0;
 unsigned long lastProximityCheckTime = 0;
 
@@ -213,7 +240,11 @@ float minDistance = 999.0;
 int closestAngle = 90; // Default to looking forward
 
 // Storing all distance readings
-float angleDistances[NUM_ANGLES] = {0, 0, 0, 0, 0};
+float angleDistances[NUM_ANGLES] = {0};
+
+// Directionality
+int targetHeading = 90; // Target heading (90 = straight)
+int currentHeading = 90; // Current estimated heading
 
 // Terrain map data
 float terrainMap[3] = {0, 0, 0}; // Left, Center, Right distances
@@ -352,27 +383,32 @@ void performFullScan() {
     
     // Check for obstacles
     if (distance > 0 && distance < OBSTACLE_THRESHOLD) {
-      // Categorize by position
-      if (angle == 0) {
-        leftObstacle = true;
-        // Check for extreme close obstacle
-        if (distance < WALL_THRESHOLD) {
-          extremeLeftObstacle = true;
-          Serial.println("WARNING: VERY CLOSE wall on extreme left!");
-        }
-      } else if (angle == 180) {
+      // FIXED DIRECTION MAPPING: 
+      // Angle 0 = RIGHT
+      // Angle 180 = LEFT
+      if (angle < 45) {
         rightObstacle = true;
-        // Check for extreme close obstacle
-        if (distance < WALL_THRESHOLD) {
+        // Check for extreme close obstacle at far right
+        if (angle == 0 && distance < WALL_THRESHOLD) {
           extremeRightObstacle = true;
-          Serial.println("WARNING: VERY CLOSE wall on extreme right!");
+          Serial.println("WARNING: VERY CLOSE wall on extreme RIGHT!");
         }
-      } else if (angle == 45) {
+      } else if (angle > 135) {
         leftObstacle = true;
-      } else if (angle == 135) {
-        rightObstacle = true;
-      } else if (angle == 90) {
+        // Check for extreme close obstacle at far left
+        if (angle == 180 && distance < WALL_THRESHOLD) {
+          extremeLeftObstacle = true;
+          Serial.println("WARNING: VERY CLOSE wall on extreme LEFT!");
+        }
+      } else if (angle >= 75 && angle <= 105) {
         centerObstacle = true;
+        Serial.println("Obstacle in CENTER zone");
+      } else if (angle >= 45 && angle < 75) {
+        rightObstacle = true;
+        Serial.println("Obstacle in RIGHT zone");
+      } else if (angle > 105 && angle <= 135) {
+        leftObstacle = true;
+        Serial.println("Obstacle in LEFT zone");
       }
     }
   }
@@ -383,9 +419,105 @@ void performFullScan() {
   Serial.print(" cm at angle ");
   Serial.println(closestAngle);
   
+  // Calculate directional weights for steering based on all readings
+  calculateSteeringWeights();
+  
   // Return to center position
   ultrasonicSensor.moveToAngle(90);
   completeScanRequired = false;
+}
+
+// ==================== NEW: STEERING CONTROL FUNCTIONS ====================
+// Calculate steering weights based on sensor readings
+void calculateSteeringWeights() {
+  // Start with neutral heading
+  float leftWeight = 0;
+  float rightWeight = 0;
+  float centerWeight = 0;
+  
+  // Process all angle readings
+  for (int i = 0; i < NUM_ANGLES; i++) {
+    int angle = SCAN_ANGLES[i];
+    float distance = angleDistances[i];
+    
+    // Skip invalid readings
+    if (distance <= 0) continue;
+    
+    // Calculate weight based on proximity (closer = stronger weight)
+    float weight = 0;
+    if (distance < OBSTACLE_THRESHOLD) {
+      // Exponential weighting - obstacles closer than threshold have stronger influence
+      weight = (OBSTACLE_THRESHOLD - distance) / OBSTACLE_THRESHOLD;
+      weight = weight * weight; // Square for stronger effect
+      
+      // Categorize by angle zone
+      if (angle < 75) { // Left side
+        leftWeight += weight;
+      } else if (angle > 105) { // Right side
+        rightWeight += weight;
+      } else { // Center
+        centerWeight += weight;
+      }
+    }
+  }
+  
+  // Print weights for debugging
+  Serial.print("Steering weights - Left: ");
+  Serial.print(leftWeight);
+  Serial.print(", Center: ");
+  Serial.print(centerWeight);
+  Serial.print(", Right: ");
+  Serial.println(rightWeight);
+  
+  // FIXED LOGIC: Calculate heading adjustment based on weights
+  if (centerWeight > 0.5) {
+    // Center blocked - decide which way to turn
+    if (leftWeight >= rightWeight) {
+      // MORE weight on left (more obstacles), turn RIGHT
+      currentHeading = targetHeading + 45;
+      Serial.println("Center & left blocked: turning RIGHT");
+    } else {
+      // MORE weight on right (more obstacles), turn LEFT
+      currentHeading = targetHeading - 45;
+      Serial.println("Center & right blocked: turning LEFT");
+    }
+  } else if (leftWeight > 0.2 && rightWeight > 0.2) {
+    // Both sides have obstacles, maintain current heading
+    currentHeading = targetHeading;
+    Serial.println("Obstacles on both sides: maintaining heading");
+  } else if (leftWeight > 0.2) {
+    // Left side has obstacles, adjust heading RIGHT
+    currentHeading = targetHeading + (int)(leftWeight * 45);
+    Serial.println("Left obstacles: turning RIGHT");
+  } else if (rightWeight > 0.2) {
+    // Right side has obstacles, adjust heading LEFT
+    currentHeading = targetHeading - (int)(rightWeight * 45);
+    Serial.println("Right obstacles: turning LEFT");
+  } else {
+    // No significant obstacles, maintain target heading
+    currentHeading = targetHeading;
+    Serial.println("No obstacles: maintaining heading");
+  }
+  
+  // Constrain heading to valid range
+  currentHeading = constrain(currentHeading, 0, 180);
+  
+  Serial.print("Calculated heading adjustment: ");
+  Serial.println(currentHeading);
+}
+
+// Calculate steering correction based on current and target heading
+int calculateSteeringCorrection() {
+  // Calculate error (difference between current and target heading)
+  int error = currentHeading - targetHeading;
+  
+  // Apply proportional control
+  int correction = (int)(error * STEERING_GAIN);
+  
+  // Limit maximum correction
+  correction = constrain(correction, -MAX_STEERING_CORRECTION, MAX_STEERING_CORRECTION);
+  
+  return correction;
 }
 
 // ==================== REACT FUNCTION ====================
@@ -426,59 +558,94 @@ void react() {
     
     // Decide what to do based on full scan results
     if (leftObstacle || rightObstacle || centerObstacle) {
-      // Decide turn direction based on obstacles and wall proximity
+      // FIXED DIRECTION MAPPING:
+      float rightSpace = (angleDistances[0] + angleDistances[1] + angleDistances[2]) / 3.0; // 0°, 30°, 60°
+      float centerSpace = angleDistances[4]; // 90°
+      float leftSpace = (angleDistances[6] + angleDistances[7] + angleDistances[8]) / 3.0; // 120°, 150°, 180°
+      
+      Serial.print("SPACE ANALYSIS - Left (120-180°): ");
+      Serial.print(leftSpace);
+      Serial.print(" cm, Center: ");
+      Serial.print(centerSpace);
+      Serial.print(" cm, Right (0-60°): ");
+      Serial.print(rightSpace);
+      Serial.println(" cm");
+      
       if (centerObstacle) {
-        // If obstacle ahead, check left and right for best turn direction
-        if (extremeRightObstacle || (leftObstacle && !rightObstacle)) {
-          // Turn left if right is blocked or only left is clear
-          Serial.println("Center blocked: TURNING LEFT");
+        // Center blocked - choose the side with more space
+        if (leftSpace > rightSpace && leftSpace > OBSTACLE_THRESHOLD) {
+          Serial.println("Center blocked: TURNING LEFT (more space)");
           isTurning = true;
           turningLeft = true;
           turnStartTime = millis();
+          currentHeading = 45; // Set heading to 45° (left)
           ccw(FIXED_SPEED);
-        } else {
-          // Otherwise turn right
-          Serial.println("Center blocked: TURNING RIGHT");
+        } else if (rightSpace > OBSTACLE_THRESHOLD) {
+          Serial.println("Center blocked: TURNING RIGHT (more space)");
           isTurning = true;
           turningLeft = false;
           turnStartTime = millis();
+          currentHeading = 135; // Set heading to 135° (right)
           cw(FIXED_SPEED);
+        } else {
+          // Both directions limited - back up and turn around
+          Serial.println("Limited space all directions: backing up");
+          reverse(FIXED_SPEED);
+          delay(500);
+          isTurning = true;
+          turningLeft = true; // Default to left
+          turnStartTime = millis();
+          ccw(FIXED_SPEED);
         }
-      } else if (rightObstacle && !extremeLeftObstacle) {
-        // Right obstacle and left is not extremely close, turn left
-        Serial.println("Right blocked: TURNING LEFT");
-        isTurning = true;
-        turningLeft = true;
-        turnStartTime = millis();
-        ccw(FIXED_SPEED);
-      } else if (leftObstacle && !extremeRightObstacle) {
-        // Left obstacle and right is not extremely close, turn right
+      } else if (leftObstacle && !rightObstacle) {
+        // Left blocked, right clear
         Serial.println("Left blocked: TURNING RIGHT");
         isTurning = true;
         turningLeft = false;
         turnStartTime = millis();
+        currentHeading = 120; // Adjust heading right
         cw(FIXED_SPEED);
+      } else if (rightObstacle && !leftObstacle) {
+        // Right blocked, left clear
+        Serial.println("Right blocked: TURNING LEFT");
+        isTurning = true;
+        turningLeft = true;
+        turnStartTime = millis();
+        currentHeading = 60; // Adjust heading left
+        ccw(FIXED_SPEED);
       } else {
-        // Complex situation, use minimum distance angle to determine
-        if (closestAngle <= 90) {
-          // Closest object on left, turn right
-          Serial.println("TURNING RIGHT based on closest object");
-          isTurning = true;
-          turningLeft = false;
-          turnStartTime = millis();
-          cw(FIXED_SPEED);
+        // Both sides have some obstacles - use weighted steering
+        int steeringCorrection = calculateSteeringCorrection();
+        
+        if (abs(steeringCorrection) > MAX_STEERING_CORRECTION/2) {
+          // Large correction needed - do a proper turn
+          if (steeringCorrection > 0) {
+            // Turn right
+            Serial.println("Complex situation: TURNING RIGHT based on weights");
+            isTurning = true;
+            turningLeft = false;
+            turnStartTime = millis();
+            cw(FIXED_SPEED);
+          } else {
+            // Turn left
+            Serial.println("Complex situation: TURNING LEFT based on weights");
+            isTurning = true;
+            turningLeft = true;
+            turnStartTime = millis();
+            ccw(FIXED_SPEED);
+          }
         } else {
-          // Closest object on right, turn left
-          Serial.println("TURNING LEFT based on closest object");
-          isTurning = true;
-          turningLeft = true;
-          turnStartTime = millis();
-          ccw(FIXED_SPEED);
+          // Small correction - use proportional steering
+          Serial.println("Using proportional steering correction");
+          headingCorrection = true;
+          forwardWithSteering(FIXED_SPEED, steeringCorrection);
         }
       }
     } else {
-      // No obstacles detected, move forward
+      // No obstacles detected, move forward with target heading
       Serial.println("No obstacles detected: Moving forward");
+      currentHeading = targetHeading; // Reset to target heading
+      headingCorrection = false;
       forward(FIXED_SPEED);
     }
     return;
@@ -487,7 +654,8 @@ void react() {
   // If currently turning, check if turn is complete
   if (isTurning) {
     if (millis() - turnStartTime > TURN_DURATION) {
-      Serial.println("Turn complete, performing fresh scan");
+      Serial.print("Turn complete, new heading: ");
+      Serial.println(currentHeading);
       isTurning = false;
       justTurned = true;
       completeScanRequired = true; // Force a complete scan after turning
@@ -500,6 +668,25 @@ void react() {
       }
       return; // Skip the rest of the function while turning
     }
+  }
+  
+  // If in heading correction mode, apply steering
+  if (headingCorrection) {
+    int steeringCorrection = calculateSteeringCorrection();
+    forwardWithSteering(FIXED_SPEED, steeringCorrection);
+    
+    // Gradually converge to target heading
+    if (currentHeading < targetHeading) {
+      currentHeading++;
+    } else if (currentHeading > targetHeading) {
+      currentHeading--;
+    }
+    
+    if (currentHeading == targetHeading) {
+      headingCorrection = false;
+    }
+    
+    return;
   }
   
   // Periodically check the closest object to avoid collisions
@@ -546,13 +733,13 @@ void react() {
     Serial.println(closestAngle);
   }
   
-  // Check for extreme close obstacles at 0° and 180°
+  // Check for extreme close obstacles
   if (currentAngle == 0 && distance > 0 && distance < WALL_THRESHOLD) {
-    extremeLeftObstacle = true;
-    Serial.println("WARNING: VERY CLOSE wall on extreme left!");
-  } else if (currentAngle == 180 && distance > 0 && distance < WALL_THRESHOLD) {
     extremeRightObstacle = true;
-    Serial.println("WARNING: VERY CLOSE wall on extreme right!");
+    Serial.println("WARNING: VERY CLOSE wall on extreme RIGHT!");
+  } else if (currentAngle == 180 && distance > 0 && distance < WALL_THRESHOLD) {
+    extremeLeftObstacle = true;
+    Serial.println("WARNING: VERY CLOSE wall on extreme LEFT!");
   }
   
   // Check if obstacle detected and classify by position
@@ -561,12 +748,12 @@ void react() {
     Serial.println(currentAngle);
     
     // Categorize obstacle based on angle
-    if (currentAngle <= 45) {
-      leftObstacle = true;
-      Serial.println("Obstacle on LEFT side");
-    } else if (currentAngle >= 135) {
+    if (currentAngle < 75) {
       rightObstacle = true;
       Serial.println("Obstacle on RIGHT side");
+    } else if (currentAngle > 105) {
+      leftObstacle = true;
+      Serial.println("Obstacle on LEFT side");
     } else {
       centerObstacle = true;
       Serial.println("Obstacle in CENTER");
@@ -581,14 +768,27 @@ void react() {
   
   // If we've completed a full scan, decide what to do
   if (currentScanIndex == 0) {
-    // Full scan completed, check for obstacles
+    // Update steering weights based on scan data
+    calculateSteeringWeights();
+    
+    // Check if we need to adjust course or do a complete scan
     if (leftObstacle || centerObstacle || rightObstacle) {
-      // Require a complete scan to make a decision
+      // Obstacles detected, need to make a decision
       completeScanRequired = true;
     } else {
-      // No obstacles, continue forward at full speed
-      Serial.println("Full scan complete - path clear");
-      forward(FIXED_SPEED);
+      // No obstacles, apply any heading correction
+      int steeringCorrection = calculateSteeringCorrection();
+      
+      if (abs(steeringCorrection) > 10) {
+        // Apply steering correction while moving forward
+        Serial.print("Applying heading correction: ");
+        Serial.println(steeringCorrection);
+        forwardWithSteering(FIXED_SPEED, steeringCorrection);
+      } else {
+        // Continue straight ahead at full speed
+        Serial.println("Maintaining straight course");
+        forward(FIXED_SPEED);
+      }
     }
     
     // Reset obstacle flags but keep extreme obstacles
@@ -616,11 +816,11 @@ void setup() {
   // Status LED
   pinMode(LED_BUILTIN, OUTPUT);
   
-  Serial.println("Robot initialized with enhanced wall avoidance");
-  Serial.println("- Performing full scan before movement");
-  Serial.println("- Special detection for walls at extreme angles");
-  Serial.println("- Terrain mapping and proximity monitoring");
-  Serial.println("- Emergency maneuvers if objects get too close");
+  Serial.println("Robot initialized with enhanced angular control system");
+  Serial.println("- 9-angle high-resolution scanning");
+  Serial.println("- Proportional steering control for precise turning");
+  Serial.println("- Heading correction to maintain straight path");
+  Serial.println("- Emergency collision avoidance");
   
   delay(1000);  // Initialization delay
   
@@ -635,6 +835,8 @@ void setup() {
   emergencyStop = false;
   justTurned = false;
   completeScanRequired = true;  // Start with a full scan
+  headingCorrection = false;
+  currentHeading = targetHeading;
   
   // Initialize map with initial readings
   updateMap();
