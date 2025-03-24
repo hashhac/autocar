@@ -181,7 +181,7 @@ UltrasonicSensorMovement ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
 
 // Constants
 const int FIXED_SPEED = 250;
-const float OBSTACLE_THRESHOLD = 20.0; // Changed to 20cm
+const float OBSTACLE_THRESHOLD = 25.0; // Changed to 20cm
 const float EMERGENCY_THRESHOLD = 10.0; // Even closer distance for emergency maneuvers
 const unsigned long TURN_DURATION = 800; // Shorter turn duration
 const unsigned long PROXIMITY_CHECK_INTERVAL = 200; // Check closest object every 200ms
