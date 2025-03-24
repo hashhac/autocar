@@ -70,8 +70,18 @@ Servo right_font_motor;  // create servo object to control Vex Motor Controller 
 Servo turret_motor;
 Servo myservo;
 
-int speed_val = 100;
+// int speed_val = 100;
 int speed_change;
+
+int speed_val = 250;  // Fixed speed
+char current_direction = ' ';  // Current movement direction
+ 
+ const float ROTATION_DELAY_PER_DEGREE = 11.875;
+ const int SENSOR_OFFSET = 61;
+ const float SENSOR_SCALE = 4261.4;
+ const int SENSOR_MIN_THRESHOLD = 110;
+ const int SENSOR_MAX_THRESHOLD = 500;
+ const int TIMEOUT_DURATION = 10000;
 
 //Serial Pointer
 HardwareSerial *SerialCom;
@@ -194,9 +204,11 @@ STATE test() {
     corner_angle = detectCorner(sweep_dist);
 
     delay(2000);
+    myservo.write(90);
+
 
     //rotate/drive if needed away from corner
-    if(angle != -1) {
+    if(corner_angle != -1) {
      rotate(corner_angle);
     }
     delay(2000);
@@ -212,7 +224,9 @@ STATE test() {
     delay(2000);
 
     // DriveParallel to the next wall
-    wallFollow();
+    // wallFollow();
+    forwardUntil(driving_until_dist, motor_pwr);
+    
     delay(2000);
 
     // Rotate 90 or 180
@@ -220,7 +234,6 @@ STATE test() {
     
     // Measure with ultrasonic to find the longest wall
     // Measure infront
-    myservo.write(90);
     wall_dist =  HC_SR04_range();
     if (wall_dist <= 1500) {
       rotate(rotate_angle);
@@ -439,7 +452,6 @@ float med_ir_dist(int ir_pin) {
 void orientate() {
   float tolerance = 1; 
   float ir_left, ir_right;
-  Serial
 
   do {
     ir_left = med_ir_dist(IR_LeftPIN);
@@ -454,6 +466,78 @@ void orientate() {
     
   stop();
 }
+
+
+void rotate(int degrees) {
+   // Rotate the robot by a certain number of degrees
+   // This function is not implemented yet
+   // 11.875 ms per degree
+   // 1 degree = 11.875 ms
+ 
+   if (degrees > 0) {
+     ccw();
+     delay(ROTATION_DELAY_PER_DEGREE       * degrees);
+   } else {
+     cw();
+     delay(ROTATION_DELAY_PER_DEGREE *degrees);
+   }
+   stop();
+   
+ }
+ 
+ 
+ // Convert raw sensor value to distance - don't use this for decisions
+ float calculateDistance(int rawValue) {
+   return (rawValue - SENSOR_OFFSET) / SENSOR_SCALE;
+ }
+ 
+ void forwardUntil(int targetDistance, int speed) {
+   // Set the speed for forward movement until robot is a set distance away
+  speed_val = speed;
+ 
+   // Tmeout feature to turn off after a certain time automatically
+   unsigned long startTime = millis();
+   
+ while (true) {
+   if (millis() - startTime > TIMEOUT_DURATION) {
+     Serial.println("Timeout reached. Stopping.");
+     break;
+   }
+ 
+  //  // Read the current distance from the front sensor
+  //  int currentRawValue = sensor1.readRawValue();
+ 
+  //  // Convert the raw value to distance
+  //  float currentDistance = calculateDistance(currentRawValue);
+
+  float currentDistance = HC_SR04_range();
+   Serial.print("Current Distance: ");
+   Serial.println(currentDistance);
+ 
+   // Check if the target distance has been reached
+  //  if ((currentDistance <= targetDistance) && 
+  //      (currentRawValue > SENSOR_MIN_THRESHOLD && currentRawValue < SENSOR_MAX_THRESHOLD)) {
+    if (currentDistance <= targetDistance) {
+     Serial.print("Target Distance Reached: ");
+     Serial.println(currentDistance);
+     break;
+   }
+ 
+   // Move forward
+   forward();
+ 
+ }
+ 
+ // Stop the robot once the target distance is reached
+ stop();
+ }
+
+
+
+
+
+
+
 
 #ifndef NO_HC-SR04
 float HC_SR04_range()
