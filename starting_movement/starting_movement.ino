@@ -14,6 +14,11 @@ enum STATE
 
 // Refer to Shield Pinouts.jpg for pin locations
 
+// Global variables
+float gyroRate = 0;                      
+float currentAngle = 0;               
+byte serialRead = 0;     
+
 // Default motor control pins
 const byte left_front = 46;
 const byte left_rear = 47;
@@ -58,44 +63,42 @@ class Gyro
 private:
     int sensorPin;                 // Pin connected to the gyro
     float currentAngle = 0;        // Current angle in degrees
- 
-public:
-   unsigned long lastTime;        // Last time the gyro was read
-    float gyroZeroVoltage;         // Zero-drift voltage of the gyro
-    float gyroSensitivity = 0.007; // Sensitivity in V/dps (from datasheet)
-    float rotationThreshold = 1.5; // Minimum angular velocity to consider (dps)
+    unsigned long lastTime;        // Last time the gyro was read
+    float gyroZeroVoltage = 0;     // Zero voltage when gyro is still
+    float gyroSensitivity = 0.0067; // Sensitivity in V/dps (from datasheet)
+    float rotationThreshold = 1.5; // Threshold to ignore small rotations
     float gyroSupplyVoltage = 5.0; // Supply voltage for the gyro
 
+public:
     // Constructor - initialize with sensor pin
-    Gyro(int pin)
-    {
+    Gyro(int pin) {
         sensorPin = pin; // Initialize the sensor pin
         currentAngle = 0;
         lastTime = 0;
     }
 
+    float getRotationThreshold() {
+        return rotationThreshold;
+    }
+    
     // Reset the gyro angle to 0
-    void reset()
-    {
+    void reset() {
         currentAngle = 0;
         lastTime = millis();
         Serial.println("Gyro reset: Angle set to 0");
     }
 
     // Initialize the gyro
-    void begin()
-    {
+    void begin() {
         pinMode(sensorPin, INPUT); // Set the sensor pin as input
         reset();                   // Reset the gyro angle to 0
 
         // Calibrate the gyro to find the zero-drift voltage
         int i;
         float sum = 0;
-        float sensorValue;
         Serial.println("Please keep the sensor still for calibration...");
-        for (i = 0; i < 100; i++)
-        { // Read 100 values to calculate the zero-drift
-            sensorValue = analogRead(sensorPin);
+        for (i = 0; i < 100; i++) { // Read 100 values to calculate the zero-drift
+            float sensorValue = analogRead(sensorPin);
             sum += sensorValue;
             delay(5);
         }
@@ -105,8 +108,7 @@ public:
     }
 
     // Read the angular velocity from the gyro
-    float readAngularVelocity()
-    {
+    float readAngularVelocity() {
         // Read the raw analog value and convert to voltage
         float sensorValue = analogRead(sensorPin);
         float voltage = (sensorValue / 1023.0) * gyroSupplyVoltage;
@@ -115,25 +117,15 @@ public:
         float angularVelocity = (voltage - gyroZeroVoltage) / gyroSensitivity;
 
         // Apply a threshold to ignore small noise
-        if (abs(angularVelocity) < rotationThreshold)
-        {
+        if (abs(angularVelocity) < rotationThreshold) {
             angularVelocity = 0;
         }
-
-        // Debug: Print the raw value, voltage, and angular velocity
-        Serial.print("Raw Value: ");
-        Serial.print(sensorValue);
-        Serial.print(", Voltage: ");
-        Serial.print(voltage, 4);
-        Serial.print(", Angular Velocity: ");
-        Serial.println(angularVelocity, 4);
 
         return angularVelocity;
     }
 
     // Update the current angle based on the angular velocity
-    void updateAngle()
-    {
+    void updateAngle() {
         unsigned long currentTime = millis();
         float deltaTime = (currentTime - lastTime) / 1000.0; // Convert to seconds
         lastTime = currentTime;
@@ -152,8 +144,7 @@ public:
     }
 
     // Get the current angle
-    float getAngle()
-    {
+    float getAngle() {
         return currentAngle;
     }
 };
@@ -231,6 +222,51 @@ void loop(void) // main loop
         machine_state = stopped();
         break;
     };
+
+     // Check for input from serial (if required)
+     if (Serial.available()) {
+        serialRead = Serial.read();
+        if (serialRead == 49) { // ASCII 49 is '1' - Just an example check
+            // Process input if needed
+        }
+    }
+
+    // // Read the sensor value and convert it to voltage
+    // gyroRate = (analogRead(sensorPin) * gyroSupplyVoltage) / 1023.0;
+
+    // // Remove the gyro zero voltage (drift correction)
+    // gyroRate -= (gyroZeroVoltage / 1023.0) * gyroSupplyVoltage;
+
+    // // Convert voltage to angular velocity (in degrees per second)
+    // float angularVelocity = gyroRate / gyroSensitivity;
+
+    // // If the angular velocity is above the threshold, update the angle
+    // if (angularVelocity >= rotationThreshold || angularVelocity <= -rotationThreshold) {
+    //     // Calculate the change in angle based on angular velocity
+    //     float angleChange = angularVelocity / (1000 / T);  // T is the loop time in ms
+    //     currentAngle += angleChange;
+    // }
+
+    // // Keep the angle between 0 and 360 degrees
+    // if (currentAngle < 0) {
+    //     currentAngle += 360;
+    // } else if (currentAngle >= 360) {
+    //     currentAngle -= 360;
+    // }
+
+     // Use the Gyro class to read angular velocity and update the angle
+     gyro.updateAngle();
+     float angularVelocity = gyro.readAngularVelocity();
+     float currentAngle = gyro.getAngle();
+
+    // Output the angular velocity and current angle for monitoring
+    Serial.print("Angular Velocity: ");
+    Serial.print(angularVelocity);
+    Serial.print(" dps | Current Angle: ");
+    Serial.println(currentAngle);
+
+    // Control the loop time interval
+    delay(100);
 }
 
 STATE initialising()
@@ -645,44 +681,34 @@ void rotate(int degrees)
     if (degrees > 0)
     {
         ccw(); // Counter-clockwise rotation
+        Serial.println("Rotating Counter-Clockwise");
     }
     else
     {
         cw(); // Clockwise rotation
+        Serial.println("Rotating Clockwise");
     }
 
-    // Initialize variables for tracking the angle turned
-    float currentAngle = 0;
-    unsigned long previousTime = millis();
-
     // Rotate until the desired angle is reached
-    while (abs(currentAngle) < abs(degrees))
+    while (abs(gyro.getAngle()) < abs(degrees))
     {
-        // Use the Gyro class's method to read angular velocity
-        float angularVelocity = gyro.readAngularVelocity();
+        // Update the gyro angle
+        gyro.updateAngle();
 
-        // Ignore small angular velocities below the threshold
-        if (angularVelocity >= gyro.rotationThreshold || angularVelocity <= -gyro.rotationThreshold)
-        {
-            // Calculate the time elapsed since the last reading
-            unsigned long currentTime = millis();
-            float deltaTime = (currentTime - previousTime) / 1000.0; // Convert to seconds
-            previousTime = currentTime;
+        // Get the current angle
+        float currentAngle = gyro.getAngle();
 
-            // Calculate the change in angle
-            float angleChange = angularVelocity * deltaTime;
-            currentAngle += angleChange;
+        // Debug: Print the current angle
+        Serial.print("Current Angle: ");
+        Serial.println(currentAngle);
 
-            // Debug: Print the current angle and angular velocity
-            Serial.print("Angular Velocity: ");
-            Serial.print(angularVelocity);
-            Serial.print(" dps, Current Angle: ");
-            Serial.println(currentAngle);
-        }
+        // Small delay to avoid overwhelming the loop
+        delay(10);
     }
 
     // Stop the robot once the desired angle is reached
     stop();
+    Serial.println("Rotation Complete");
 }
 
 // Convert raw sensor value to distance - don't use this for decisions
