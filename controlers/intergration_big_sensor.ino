@@ -181,7 +181,7 @@ UltrasonicSensorMovement ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
 
 // Constants
 const int FIXED_SPEED = 250;
-const float OBSTACLE_THRESHOLD = 20.0; // Changed to 20cm
+const float OBSTACLE_THRESHOLD = 30.0; // Changed to 20cm
 const unsigned long TURN_DURATION = 1000; // Turn for 1 second
 
 // Scanning angles
