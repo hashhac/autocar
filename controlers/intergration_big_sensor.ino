@@ -181,10 +181,12 @@ UltrasonicSensorMovement ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
 
 // Constants
 const int FIXED_SPEED = 250;
-const float OBSTACLE_THRESHOLD = 25.0; // Changed to 20cm
-const float EMERGENCY_THRESHOLD = 10.0; // Even closer distance for emergency maneuvers
-const unsigned long TURN_DURATION = 800; // Shorter turn duration
-const unsigned long PROXIMITY_CHECK_INTERVAL = 200; // Check closest object every 200ms
+const int SCAN_SPEED = 150;  // Reduced speed during scanning
+const float OBSTACLE_THRESHOLD = 25.0;
+const float EMERGENCY_THRESHOLD = 10.0;
+const float WALL_THRESHOLD = 15.0;  // Very close wall threshold
+const unsigned long TURN_DURATION = 800;
+const unsigned long PROXIMITY_CHECK_INTERVAL = 150; // More frequent checks
 
 // Scanning angles
 const int NUM_ANGLES = 5;
@@ -196,6 +198,10 @@ int currentScanIndex = 0;
 bool leftObstacle = false;
 bool centerObstacle = false;
 bool rightObstacle = false;
+bool extremeLeftObstacle = false;  // Very close obstacle at 0°
+bool extremeRightObstacle = false; // Very close obstacle at 180°
+bool justTurned = false;  // Flag to indicate we just completed a turn
+bool completeScanRequired = true;  // Start with a full scan
 bool isTurning = false;
 bool turningLeft = false;
 bool emergencyStop = false;
@@ -205,6 +211,9 @@ unsigned long lastProximityCheckTime = 0;
 // Tracking closest object
 float minDistance = 999.0;
 int closestAngle = 90; // Default to looking forward
+
+// Storing all distance readings
+float angleDistances[NUM_ANGLES] = {0, 0, 0, 0, 0};
 
 // Terrain map data
 float terrainMap[3] = {0, 0, 0}; // Left, Center, Right distances
@@ -307,6 +316,78 @@ bool checkClosestObjectProximity() {
   return false;
 }
 
+// ==================== SCAN ENVIRONMENT FUNCTION ====================
+void performFullScan() {
+  Serial.println("PERFORMING FULL ENVIRONMENT SCAN");
+  stop(); // Stop to get accurate readings
+  
+  // Initialize with safe values
+  minDistance = 999.0;
+  extremeLeftObstacle = false;
+  extremeRightObstacle = false;
+  leftObstacle = false;
+  centerObstacle = false;
+  rightObstacle = false;
+  
+  // Scan all angles
+  for (int i = 0; i < NUM_ANGLES; i++) {
+    int angle = SCAN_ANGLES[i];
+    ultrasonicSensor.moveToAngle(angle);
+    
+    // Take distance reading
+    float distance = ultrasonicSensor.getDistance();
+    angleDistances[i] = distance; // Store all readings
+    
+    Serial.print("SCAN: Angle ");
+    Serial.print(angle);
+    Serial.print(": ");
+    Serial.print(distance);
+    Serial.println(" cm");
+    
+    // Track minimum distance
+    if (distance > 0 && distance < minDistance) {
+      minDistance = distance;
+      closestAngle = angle;
+    }
+    
+    // Check for obstacles
+    if (distance > 0 && distance < OBSTACLE_THRESHOLD) {
+      // Categorize by position
+      if (angle == 0) {
+        leftObstacle = true;
+        // Check for extreme close obstacle
+        if (distance < WALL_THRESHOLD) {
+          extremeLeftObstacle = true;
+          Serial.println("WARNING: VERY CLOSE wall on extreme left!");
+        }
+      } else if (angle == 180) {
+        rightObstacle = true;
+        // Check for extreme close obstacle
+        if (distance < WALL_THRESHOLD) {
+          extremeRightObstacle = true;
+          Serial.println("WARNING: VERY CLOSE wall on extreme right!");
+        }
+      } else if (angle == 45) {
+        leftObstacle = true;
+      } else if (angle == 135) {
+        rightObstacle = true;
+      } else if (angle == 90) {
+        centerObstacle = true;
+      }
+    }
+  }
+  
+  // Full scan complete
+  Serial.print("Scan complete - Closest object: ");
+  Serial.print(minDistance);
+  Serial.print(" cm at angle ");
+  Serial.println(closestAngle);
+  
+  // Return to center position
+  ultrasonicSensor.moveToAngle(90);
+  completeScanRequired = false;
+}
+
 // ==================== REACT FUNCTION ====================
 void react() {
   // Update LED heartbeat
@@ -332,23 +413,84 @@ void react() {
     delay(700);
     stop();
     
-    // Clear emergency flag
+    // Clear emergency flag and force a full scan
     emergencyStop = false;
+    completeScanRequired = true;
     
-    // Reset for new scanning
-    minDistance = 999.0;
+    return;
+  }
+  
+  // If a complete scan is required, do it before any movement
+  if (completeScanRequired) {
+    performFullScan();
     
+    // Decide what to do based on full scan results
+    if (leftObstacle || rightObstacle || centerObstacle) {
+      // Decide turn direction based on obstacles and wall proximity
+      if (centerObstacle) {
+        // If obstacle ahead, check left and right for best turn direction
+        if (extremeRightObstacle || (leftObstacle && !rightObstacle)) {
+          // Turn left if right is blocked or only left is clear
+          Serial.println("Center blocked: TURNING LEFT");
+          isTurning = true;
+          turningLeft = true;
+          turnStartTime = millis();
+          ccw(FIXED_SPEED);
+        } else {
+          // Otherwise turn right
+          Serial.println("Center blocked: TURNING RIGHT");
+          isTurning = true;
+          turningLeft = false;
+          turnStartTime = millis();
+          cw(FIXED_SPEED);
+        }
+      } else if (rightObstacle && !extremeLeftObstacle) {
+        // Right obstacle and left is not extremely close, turn left
+        Serial.println("Right blocked: TURNING LEFT");
+        isTurning = true;
+        turningLeft = true;
+        turnStartTime = millis();
+        ccw(FIXED_SPEED);
+      } else if (leftObstacle && !extremeRightObstacle) {
+        // Left obstacle and right is not extremely close, turn right
+        Serial.println("Left blocked: TURNING RIGHT");
+        isTurning = true;
+        turningLeft = false;
+        turnStartTime = millis();
+        cw(FIXED_SPEED);
+      } else {
+        // Complex situation, use minimum distance angle to determine
+        if (closestAngle <= 90) {
+          // Closest object on left, turn right
+          Serial.println("TURNING RIGHT based on closest object");
+          isTurning = true;
+          turningLeft = false;
+          turnStartTime = millis();
+          cw(FIXED_SPEED);
+        } else {
+          // Closest object on right, turn left
+          Serial.println("TURNING LEFT based on closest object");
+          isTurning = true;
+          turningLeft = true;
+          turnStartTime = millis();
+          ccw(FIXED_SPEED);
+        }
+      }
+    } else {
+      // No obstacles detected, move forward
+      Serial.println("No obstacles detected: Moving forward");
+      forward(FIXED_SPEED);
+    }
     return;
   }
   
   // If currently turning, check if turn is complete
   if (isTurning) {
     if (millis() - turnStartTime > TURN_DURATION) {
-      Serial.println("Turn complete, resuming scanning");
+      Serial.println("Turn complete, performing fresh scan");
       isTurning = false;
-      leftObstacle = false;
-      centerObstacle = false;
-      rightObstacle = false;
+      justTurned = true;
+      completeScanRequired = true; // Force a complete scan after turning
     } else {
       // Continue turning in the current direction
       if (turningLeft) {
@@ -391,6 +533,9 @@ void react() {
   Serial.print(distance);
   Serial.println(" cm");
   
+  // Store the reading
+  angleDistances[currentScanIndex] = distance;
+  
   // Check if this is the closest object yet
   if (distance > 0 && distance < minDistance) {
     minDistance = distance;
@@ -401,6 +546,15 @@ void react() {
     Serial.println(closestAngle);
   }
   
+  // Check for extreme close obstacles at 0° and 180°
+  if (currentAngle == 0 && distance > 0 && distance < WALL_THRESHOLD) {
+    extremeLeftObstacle = true;
+    Serial.println("WARNING: VERY CLOSE wall on extreme left!");
+  } else if (currentAngle == 180 && distance > 0 && distance < WALL_THRESHOLD) {
+    extremeRightObstacle = true;
+    Serial.println("WARNING: VERY CLOSE wall on extreme right!");
+  }
+  
   // Check if obstacle detected and classify by position
   if (distance > 0 && distance < OBSTACLE_THRESHOLD) {
     Serial.print("OBSTACLE DETECTED at angle ");
@@ -408,65 +562,42 @@ void react() {
     
     // Categorize obstacle based on angle
     if (currentAngle <= 45) {
-      // Left side obstacle
       leftObstacle = true;
       Serial.println("Obstacle on LEFT side");
     } else if (currentAngle >= 135) {
-      // Right side obstacle
       rightObstacle = true;
       Serial.println("Obstacle on RIGHT side");
     } else {
-      // Center/front obstacle
       centerObstacle = true;
       Serial.println("Obstacle in CENTER");
     }
   }
   
+  // Move forward at reduced speed while scanning
+  forward(SCAN_SPEED);
+  
   // Move to next scan angle
   currentScanIndex = (currentScanIndex + 1) % NUM_ANGLES;
   
-  // If we've completed a full scan (back to first angle), decide what to do
+  // If we've completed a full scan, decide what to do
   if (currentScanIndex == 0) {
+    // Full scan completed, check for obstacles
     if (leftObstacle || centerObstacle || rightObstacle) {
-      // Decide turn direction based on where obstacles are
-      if (rightObstacle) {
-        // Right side obstacle - turn left
-        Serial.println("TURNING LEFT to avoid right obstacle");
-        isTurning = true;
-        turningLeft = true;
-        turnStartTime = millis();
-        ccw(FIXED_SPEED);
-      } else if (leftObstacle) {
-        // Left side obstacle - turn right
-        Serial.println("TURNING RIGHT to avoid left obstacle");
-        isTurning = true;
-        turningLeft = false;
-        turnStartTime = millis();
-        cw(FIXED_SPEED);
-      } else if (centerObstacle) {
-        // Only center obstacle - turn left by default
-        Serial.println("TURNING LEFT to avoid center obstacle");
-        isTurning = true;
-        turningLeft = true;
-        turnStartTime = millis();
-        ccw(FIXED_SPEED);
-      }
-      
-      // Reset obstacle detection flags for next scan
-      leftObstacle = false;
-      centerObstacle = false;
-      rightObstacle = false;
+      // Require a complete scan to make a decision
+      completeScanRequired = true;
     } else {
-      // No obstacles detected, continue forward
-      Serial.println("No obstacles detected, moving forward");
+      // No obstacles, continue forward at full speed
+      Serial.println("Full scan complete - path clear");
       forward(FIXED_SPEED);
     }
     
+    // Reset obstacle flags but keep extreme obstacles
+    leftObstacle = false;
+    centerObstacle = false;
+    rightObstacle = false;
+    
     // Reset min distance for next scan cycle, but keep the closest angle
     minDistance = 999.0;
-  } else {
-    // Not completed full scan yet, keep moving forward while scanning
-    forward(FIXED_SPEED);
   }
 }
 
@@ -485,11 +616,11 @@ void setup() {
   // Status LED
   pinMode(LED_BUILTIN, OUTPUT);
   
-  Serial.println("Robot initialized with proximity monitoring and terrain mapping");
-  Serial.println("- Continuously tracking closest object");
-  Serial.println("- Emergency maneuvers if objects get too close (10cm)");
-  Serial.println("- Terrain mapping of left, center, and right areas");
-  Serial.println("- Normal obstacle avoidance threshold: 20cm");
+  Serial.println("Robot initialized with enhanced wall avoidance");
+  Serial.println("- Performing full scan before movement");
+  Serial.println("- Special detection for walls at extreme angles");
+  Serial.println("- Terrain mapping and proximity monitoring");
+  Serial.println("- Emergency maneuvers if objects get too close");
   
   delay(1000);  // Initialization delay
   
@@ -498,8 +629,12 @@ void setup() {
   leftObstacle = false;
   centerObstacle = false;
   rightObstacle = false;
+  extremeLeftObstacle = false;
+  extremeRightObstacle = false;
   isTurning = false;
   emergencyStop = false;
+  justTurned = false;
+  completeScanRequired = true;  // Start with a full scan
   
   // Initialize map with initial readings
   updateMap();
@@ -511,5 +646,5 @@ void loop() {
   react();
   
   // Minimal delay to prevent too frequent updates
-  delay(20); // Further reduced delay for better responsiveness
+  delay(20);
 }
