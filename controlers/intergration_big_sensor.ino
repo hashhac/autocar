@@ -14,7 +14,7 @@ public:
   void initialize() {
     myservo_.write(90);
     currentAngle_ = 90;
-    delay(200);
+    delay(100); // Reduced delay
   }
 
   float getDistance() {
@@ -25,7 +25,7 @@ public:
     if (angle >= 0 && angle <= 180) {
       myservo_.write(angle);
       currentAngle_ = angle;
-      delay(200); // Give time for servo to move
+      delay(100); // Reduced delay
     }
   }
   
@@ -181,26 +181,165 @@ UltrasonicSensorMovement ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
 
 // Constants
 const int FIXED_SPEED = 250;
-const float OBSTACLE_THRESHOLD = 30.0; // Changed to 20cm
-const unsigned long TURN_DURATION = 1000; // Turn for 1 second
+const float OBSTACLE_THRESHOLD = 20.0; // Changed to 20cm
+const float EMERGENCY_THRESHOLD = 10.0; // Even closer distance for emergency maneuvers
+const unsigned long TURN_DURATION = 800; // Shorter turn duration
+const unsigned long PROXIMITY_CHECK_INTERVAL = 200; // Check closest object every 200ms
 
 // Scanning angles
 const int NUM_ANGLES = 5;
 const int SCAN_ANGLES[NUM_ANGLES] = {0, 45, 90, 135, 180};
+const int MAP_ANGLES[3] = {0, 90, 180}; // Left, Center, Right angles for mapping
 
 // State variables
 int currentScanIndex = 0;
-bool leftObstacle = false;   // Obstacle on left side (0-45 degrees)
-bool centerObstacle = false; // Obstacle in front (90 degrees)
-bool rightObstacle = false;  // Obstacle on right side (135-180 degrees)
+bool leftObstacle = false;
+bool centerObstacle = false;
+bool rightObstacle = false;
 bool isTurning = false;
-bool turningLeft = false;    // Direction of current turn
+bool turningLeft = false;
+bool emergencyStop = false;
 unsigned long turnStartTime = 0;
+unsigned long lastProximityCheckTime = 0;
+
+// Tracking closest object
+float minDistance = 999.0;
+int closestAngle = 90; // Default to looking forward
+
+// Terrain map data
+float terrainMap[3] = {0, 0, 0}; // Left, Center, Right distances
+unsigned long lastMapUpdateTime = 0;
+const unsigned long MAP_UPDATE_INTERVAL = 2000; // Update map every 2 seconds
+
+// ==================== MAPPING FUNCTION ====================
+void updateMap() {
+  Serial.println("UPDATING TERRAIN MAP");
+  
+  // Store current angle to return to it after mapping
+  int currentAngle = ultrasonicSensor.getAngle();
+  
+  // Scan the three mapping angles
+  for (int i = 0; i < 3; i++) {
+    ultrasonicSensor.moveToAngle(MAP_ANGLES[i]);
+    terrainMap[i] = ultrasonicSensor.getDistance();
+    
+    if (terrainMap[i] < 0) terrainMap[i] = 100; // Invalid reading, assume clear
+    
+    Serial.print("Map angle ");
+    Serial.print(MAP_ANGLES[i]);
+    Serial.print(": ");
+    Serial.print(terrainMap[i]);
+    Serial.println(" cm");
+  }
+  
+  // Return to original angle
+  ultrasonicSensor.moveToAngle(currentAngle);
+  
+  // Print ASCII map representation
+  Serial.println("TERRAIN MAP:");
+  Serial.println("---------------------");
+  
+  // Left sector
+  Serial.print("Left: ");
+  displayDistanceBar(terrainMap[0]);
+  
+  // Center sector
+  Serial.print("Cntr: ");
+  displayDistanceBar(terrainMap[1]);
+  
+  // Right sector
+  Serial.print("Rght: ");
+  displayDistanceBar(terrainMap[2]);
+  
+  Serial.println("---------------------");
+  
+  // Update the last map time
+  lastMapUpdateTime = millis();
+}
+
+// Helper function to display distance as a bar graph
+void displayDistanceBar(float distance) {
+  Serial.print("[");
+  
+  // Calculate how many bar segments to show (max 10)
+  int barLength = 0;
+  if (distance > 0) {
+    barLength = map(constrain(distance, 0, 100), 0, 100, 0, 10);
+  }
+  
+  // Print the bar
+  for (int i = 0; i < 10; i++) {
+    if (i < barLength) {
+      Serial.print(" ");
+    } else {
+      Serial.print("#");
+    }
+  }
+  
+  Serial.print("] ");
+  Serial.print(distance);
+  Serial.println(" cm");
+}
+
+// ==================== PROXIMITY CHECK FUNCTION ====================
+bool checkClosestObjectProximity() {
+  // Only perform the check if we have a valid closest angle
+  if (closestAngle >= 0) {
+    // Move to the angle with the closest object
+    ultrasonicSensor.moveToAngle(closestAngle);
+    
+    // Get the current distance
+    float currentDistance = ultrasonicSensor.getDistance();
+    
+    Serial.print("PROXIMITY CHECK at angle ");
+    Serial.print(closestAngle);
+    Serial.print(": ");
+    Serial.print(currentDistance);
+    Serial.println(" cm");
+    
+    // If we're dangerously close to something, take evasive action
+    if (currentDistance > 0 && currentDistance < EMERGENCY_THRESHOLD) {
+      Serial.println("EMERGENCY! Object too close!");
+      return true;
+    }
+  }
+  
+  return false;
+}
 
 // ==================== REACT FUNCTION ====================
 void react() {
   // Update LED heartbeat
   digitalWrite(LED_BUILTIN, (millis() % 1000) < 500);
+  
+  // If in emergency stop, reverse out then turn
+  if (emergencyStop) {
+    Serial.println("EMERGENCY MANEUVER");
+    
+    // Back up slightly
+    reverse(FIXED_SPEED);
+    delay(300);
+    
+    // Turn away from the closest object
+    if (closestAngle <= 90) {
+      // Object on left/front-left, turn right
+      cw(FIXED_SPEED);
+    } else {
+      // Object on right/front-right, turn left
+      ccw(FIXED_SPEED);
+    }
+    
+    delay(700);
+    stop();
+    
+    // Clear emergency flag
+    emergencyStop = false;
+    
+    // Reset for new scanning
+    minDistance = 999.0;
+    
+    return;
+  }
   
   // If currently turning, check if turn is complete
   if (isTurning) {
@@ -221,6 +360,22 @@ void react() {
     }
   }
   
+  // Periodically check the closest object to avoid collisions
+  if (millis() - lastProximityCheckTime > PROXIMITY_CHECK_INTERVAL) {
+    lastProximityCheckTime = millis();
+    
+    // If we detect an imminent collision, perform emergency stop
+    if (checkClosestObjectProximity()) {
+      emergencyStop = true;
+      return;
+    }
+  }
+  
+  // Periodically update the terrain map
+  if (millis() - lastMapUpdateTime > MAP_UPDATE_INTERVAL) {
+    updateMap();
+  }
+  
   // Scan at the current angle
   int currentAngle = SCAN_ANGLES[currentScanIndex];
   Serial.print("SCANNING: Angle ");
@@ -235,6 +390,16 @@ void react() {
   Serial.print("Distance: ");
   Serial.print(distance);
   Serial.println(" cm");
+  
+  // Check if this is the closest object yet
+  if (distance > 0 && distance < minDistance) {
+    minDistance = distance;
+    closestAngle = currentAngle;
+    Serial.print("NEW CLOSEST OBJECT: ");
+    Serial.print(minDistance);
+    Serial.print(" cm at angle ");
+    Serial.println(closestAngle);
+  }
   
   // Check if obstacle detected and classify by position
   if (distance > 0 && distance < OBSTACLE_THRESHOLD) {
@@ -296,6 +461,9 @@ void react() {
       Serial.println("No obstacles detected, moving forward");
       forward(FIXED_SPEED);
     }
+    
+    // Reset min distance for next scan cycle, but keep the closest angle
+    minDistance = 999.0;
   } else {
     // Not completed full scan yet, keep moving forward while scanning
     forward(FIXED_SPEED);
@@ -317,10 +485,11 @@ void setup() {
   // Status LED
   pinMode(LED_BUILTIN, OUTPUT);
   
-  Serial.println("Robot initialized with direction-sensitive avoidance");
-  Serial.println("- Continuously scanning 5 angles while moving");
-  Serial.println("- Turn left for right obstacles, right for left obstacles");
-  Serial.println("- Detection threshold: 20cm");
+  Serial.println("Robot initialized with proximity monitoring and terrain mapping");
+  Serial.println("- Continuously tracking closest object");
+  Serial.println("- Emergency maneuvers if objects get too close (10cm)");
+  Serial.println("- Terrain mapping of left, center, and right areas");
+  Serial.println("- Normal obstacle avoidance threshold: 20cm");
   
   delay(1000);  // Initialization delay
   
@@ -330,6 +499,10 @@ void setup() {
   centerObstacle = false;
   rightObstacle = false;
   isTurning = false;
+  emergencyStop = false;
+  
+  // Initialize map with initial readings
+  updateMap();
 }
 
 // ==================== LOOP FUNCTION ====================
@@ -337,6 +510,6 @@ void loop() {
   // Call the react function each iteration
   react();
   
-  // Small delay to prevent too frequent updates
-  delay(50);
+  // Minimal delay to prevent too frequent updates
+  delay(20); // Further reduced delay for better responsiveness
 }
