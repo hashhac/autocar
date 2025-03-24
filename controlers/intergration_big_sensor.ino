@@ -181,7 +181,7 @@ UltrasonicSensorMovement ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
 
 // Constants
 const int FIXED_SPEED = 250;
-const float OBSTACLE_THRESHOLD = 80.0; // Distance threshold
+const float OBSTACLE_THRESHOLD = 20.0; // Changed to 20cm
 const unsigned long TURN_DURATION = 1000; // Turn for 1 second
 
 // Scanning angles
@@ -190,8 +190,11 @@ const int SCAN_ANGLES[NUM_ANGLES] = {0, 45, 90, 135, 180};
 
 // State variables
 int currentScanIndex = 0;
-bool obstacleDetected = false;
+bool leftObstacle = false;   // Obstacle on left side (0-45 degrees)
+bool centerObstacle = false; // Obstacle in front (90 degrees)
+bool rightObstacle = false;  // Obstacle on right side (135-180 degrees)
 bool isTurning = false;
+bool turningLeft = false;    // Direction of current turn
 unsigned long turnStartTime = 0;
 
 // ==================== REACT FUNCTION ====================
@@ -204,21 +207,28 @@ void react() {
     if (millis() - turnStartTime > TURN_DURATION) {
       Serial.println("Turn complete, resuming scanning");
       isTurning = false;
-      obstacleDetected = false;
+      leftObstacle = false;
+      centerObstacle = false;
+      rightObstacle = false;
     } else {
-      // Continue turning
-      ccw(FIXED_SPEED);
+      // Continue turning in the current direction
+      if (turningLeft) {
+        ccw(FIXED_SPEED);
+      } else {
+        cw(FIXED_SPEED);
+      }
       return; // Skip the rest of the function while turning
     }
   }
   
   // Scan at the current angle
+  int currentAngle = SCAN_ANGLES[currentScanIndex];
   Serial.print("SCANNING: Angle ");
-  Serial.print(SCAN_ANGLES[currentScanIndex]);
+  Serial.print(currentAngle);
   Serial.println(" degrees");
   
   // Move servo to current angle
-  ultrasonicSensor.moveToAngle(SCAN_ANGLES[currentScanIndex]);
+  ultrasonicSensor.moveToAngle(currentAngle);
   
   // Take distance reading
   float distance = ultrasonicSensor.getDistance();
@@ -226,24 +236,68 @@ void react() {
   Serial.print(distance);
   Serial.println(" cm");
   
-  // Check if obstacle detected
+  // Check if obstacle detected and classify by position
   if (distance > 0 && distance < OBSTACLE_THRESHOLD) {
-    Serial.println("OBSTACLE DETECTED! Preparing to turn left");
-    obstacleDetected = true;
+    Serial.print("OBSTACLE DETECTED at angle ");
+    Serial.println(currentAngle);
+    
+    // Categorize obstacle based on angle
+    if (currentAngle <= 45) {
+      // Left side obstacle
+      leftObstacle = true;
+      Serial.println("Obstacle on LEFT side");
+    } else if (currentAngle >= 135) {
+      // Right side obstacle
+      rightObstacle = true;
+      Serial.println("Obstacle on RIGHT side");
+    } else {
+      // Center/front obstacle
+      centerObstacle = true;
+      Serial.println("Obstacle in CENTER");
+    }
   }
   
   // Move to next scan angle
   currentScanIndex = (currentScanIndex + 1) % NUM_ANGLES;
   
   // If we've completed a full scan (back to first angle), decide what to do
-  if (currentScanIndex == 0 && obstacleDetected) {
-    Serial.println("TURNING LEFT to avoid obstacles");
-    isTurning = true;
-    turnStartTime = millis();
-    ccw(FIXED_SPEED);
-    obstacleDetected = false; // Reset for next scan cycle
+  if (currentScanIndex == 0) {
+    if (leftObstacle || centerObstacle || rightObstacle) {
+      // Decide turn direction based on where obstacles are
+      if (rightObstacle) {
+        // Right side obstacle - turn left
+        Serial.println("TURNING LEFT to avoid right obstacle");
+        isTurning = true;
+        turningLeft = true;
+        turnStartTime = millis();
+        ccw(FIXED_SPEED);
+      } else if (leftObstacle) {
+        // Left side obstacle - turn right
+        Serial.println("TURNING RIGHT to avoid left obstacle");
+        isTurning = true;
+        turningLeft = false;
+        turnStartTime = millis();
+        cw(FIXED_SPEED);
+      } else if (centerObstacle) {
+        // Only center obstacle - turn left by default
+        Serial.println("TURNING LEFT to avoid center obstacle");
+        isTurning = true;
+        turningLeft = true;
+        turnStartTime = millis();
+        ccw(FIXED_SPEED);
+      }
+      
+      // Reset obstacle detection flags for next scan
+      leftObstacle = false;
+      centerObstacle = false;
+      rightObstacle = false;
+    } else {
+      // No obstacles detected, continue forward
+      Serial.println("No obstacles detected, moving forward");
+      forward(FIXED_SPEED);
+    }
   } else {
-    // Keep moving forward while scanning
+    // Not completed full scan yet, keep moving forward while scanning
     forward(FIXED_SPEED);
   }
 }
@@ -263,15 +317,18 @@ void setup() {
   // Status LED
   pinMode(LED_BUILTIN, OUTPUT);
   
-  Serial.println("Robot initialized with react system");
+  Serial.println("Robot initialized with direction-sensitive avoidance");
   Serial.println("- Continuously scanning 5 angles while moving");
-  Serial.println("- Turn left when obstacles detected");
+  Serial.println("- Turn left for right obstacles, right for left obstacles");
+  Serial.println("- Detection threshold: 20cm");
   
   delay(1000);  // Initialization delay
   
   // Initial state
   currentScanIndex = 0;
-  obstacleDetected = false;
+  leftObstacle = false;
+  centerObstacle = false;
+  rightObstacle = false;
   isTurning = false;
 }
 
