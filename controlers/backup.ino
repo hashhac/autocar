@@ -1,10 +1,6 @@
 #include <Arduino.h>
 #include <Servo.h>
-// ===================== Function declarations =====================
-// Function declarations (prototypes)
-void approachAndMaintainDistance(float targetDistance);
-void moveForwardWithDistanceControl(float targetDistance);
-void turnWithDistanceControl(bool turnLeft, float targetDistance);
+
 // ==================== ULTRASONIC SENSOR CLASS ====================
 class UltrasonicSensorMovement {
 public:
@@ -22,33 +18,7 @@ public:
   }
 
   float getDistance() {
-    // Take multiple readings and average them for more reliable results
-    const int numReadings = 3;
-    float validReadings[numReadings];
-    int validCount = 0;
-    float sum = 0;
-    
-    // Stabilize before taking measurements
-    digitalWrite(trigPin_, LOW);
-    delayMicroseconds(2);
-    
-    // Take multiple readings
-    for (int i = 0; i < numReadings; i++) {
-      float distance = HC_SR04_range();
-      if (distance > 0) {
-        validReadings[validCount] = distance;
-        sum += distance;
-        validCount++;
-      }
-      delay(10); // Small delay between readings
-    }
-    
-    // Calculate average of valid readings
-    if (validCount > 0) {
-      return sum / validCount;
-    } else {
-      return -1; // No valid readings
-    }
+    return HC_SR04_range();
   }
 
   void moveToAngle(int angle) {
@@ -71,26 +41,17 @@ private:
   const unsigned int MAX_DIST = 23200;
 
   float HC_SR04_range() {
-    // Make sure trigger pin is LOW before starting
-    digitalWrite(trigPin_, LOW);
-    delayMicroseconds(2);
-    
-    // Send the trigger pulse
     digitalWrite(trigPin_, HIGH);
     delayMicroseconds(10);
     digitalWrite(trigPin_, LOW);
 
-    // Wait for echo to start with timeout
     unsigned long t1 = micros();
-    while (digitalRead(echoPin_) == 0) {
-      if (micros() - t1 > MAX_DIST + 1000) return -1;
-    }
+    while (digitalRead(echoPin_) == 0 && micros() - t1 < MAX_DIST + 1000);
+    if (digitalRead(echoPin_) == 0) return -1;
 
-    // Measure pulse width (distance)
     t1 = micros();
-    while (digitalRead(echoPin_) == 1) {
-      if (micros() - t1 > MAX_DIST + 1000) return -1;
-    }
+    while (digitalRead(echoPin_) == 1 && micros() - t1 < MAX_DIST + 1000);
+    if (digitalRead(echoPin_) == 1) return -1;
 
     unsigned long pulse_width = micros() - t1;
     return pulse_width / 58.0;
@@ -236,23 +197,20 @@ Servo sensorServo;
 const int TRIG_PIN = 48;
 const int ECHO_PIN = 49;
 const int SERVO_PIN = 7;
-bool isMovingForward = false;
-bool isMovingBackward = false;
-bool in_exploration_mode = false;
 
 // Create sensor object
 UltrasonicSensorMovement ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
 
 // Constants
-const int FIXED_SPEED = 220;      // Slightly reduced from 250 for better control
+const int FIXED_SPEED = 250;
 const int SCAN_SPEED = 150;  // Reduced speed during scanning
-const int TURNING_SPEED = 180;    // Reduced from 200
-const float OBSTACLE_THRESHOLD = 30.0;  // Increased from 25cm to detect obstacles sooner
-const float EMERGENCY_THRESHOLD = 15.0; // Increased from 10cm to stop sooner
-const float WALL_THRESHOLD = 20.0;      // Increased from 15cm
-const float PATH_CLEAR_THRESHOLD = 35.0; // Increased from 30cm
+const int TURNING_SPEED = 200; // Reduced speed for more controlled turning
+const float OBSTACLE_THRESHOLD = 25.0;
+const float EMERGENCY_THRESHOLD = 10.0;
+const float WALL_THRESHOLD = 15.0;  // Very close wall threshold
+const float PATH_CLEAR_THRESHOLD = 30.0; // Threshold to consider path clear enough to proceed
 const unsigned long TURN_INCREMENT_DURATION = 200; // Much shorter turn duration for incremental turns
-const unsigned long PROXIMITY_CHECK_INTERVAL = 100; // More frequent checks (was 150ms)
+const unsigned long PROXIMITY_CHECK_INTERVAL = 150; // More frequent checks
 
 // ENHANCED: More scanning angles (9 instead of 5)
 const int NUM_ANGLES = 9;
@@ -617,68 +575,14 @@ void react() {
   // Update LED heartbeat
   digitalWrite(LED_BUILTIN, (millis() % 1000) < 500);
   
-  // Update position tracking and mapping
-  updatePosition();
-  
-  // Check if a special command was received from Serial 
-  if (Serial.available() > 0) {
-    char command = Serial.read();
-    
-    switch (command) {
-      case 'A':
-        // 'A' command - approach and maintain 15cm distance
-        approachAndMaintainDistance(15.0);
-        return;
-      
-      case 'D':
-        // 'D' command - approach and maintain 25cm distance 
-        approachAndMaintainDistance(25.0);
-        return;
-      
-      case 'M':
-        // 'M' command - print the current map
-        printMap();
-        return;
-      
-      case 'E':
-        // 'E' command - start exploration mode
-        startExploration();
-        return;
-      
-      case 'S':
-        // 'S' command - stop
-        stop();
-        isMovingForward = false;
-        isMovingBackward = false;
-        in_exploration_mode = false;
-        return;
-    }
-  }
-  
-  // If in exploration mode, navigate toward target
-  if (in_exploration_mode) {
-    navigateToExplorationTarget();
-    
-    // Periodically update the map
-    if (millis() - lastMapUpdateTime > MAP_UPDATE_INTERVAL) {
-      updateMap();
-    }
-    
-    return;
-  }
-  
-  // Regular behavior continues below...
-  
   // If in emergency stop, reverse out then turn
   if (emergencyStop) {
     Serial.println("EMERGENCY MANEUVER");
     
-    // Back up slightly more
+    // Back up slightly
     reverse(FIXED_SPEED);
-    isMovingBackward = true;
-    delay(400); // Longer backup (was 300ms)
+    delay(300);
     stop();
-    isMovingBackward = false;
     
     // Perform a full scan to determine best direction
     performFullScan();
@@ -693,13 +597,11 @@ void react() {
     } else if (rightClearance > OBSTACLE_THRESHOLD) {
       startProgressiveTurn(false, INITIAL_TURN_ANGLE);
     } else {
-      // Very limited space, try backing up more and turning left
+      // Very limited space, try backing up more and turning left (arbitrary choice)
       reverse(FIXED_SPEED);
-      isMovingBackward = true;
-      delay(800); // Much longer backup (was 500ms)
+      delay(500);
       stop();
-      isMovingBackward = false;
-      startProgressiveTurn(true, INITIAL_TURN_ANGLE * 2);
+      startProgressiveTurn(true, INITIAL_TURN_ANGLE * 2); // Larger initial angle
     }
     
     // Clear emergency flag
@@ -989,23 +891,8 @@ bool checkClosestObjectProximity() {
     // Move to the angle with the closest object
     ultrasonicSensor.moveToAngle(closestAngle);
     
-    // Take multiple readings for reliability
-    float distances[3];
-    float sum = 0;
-    int validCount = 0;
-    
-    for (int i = 0; i < 3; i++) {
-      float dist = ultrasonicSensor.getDistance();
-      if (dist > 0) {
-        distances[validCount] = dist;
-        sum += dist;
-        validCount++;
-      }
-      delay(10);
-    }
-    
-    // Calculate average if we have valid readings
-    float currentDistance = (validCount > 0) ? (sum / validCount) : -1;
+    // Get the current distance
+    float currentDistance = ultrasonicSensor.getDistance();
     
     Serial.print("PROXIMITY CHECK at angle ");
     Serial.print(closestAngle);
@@ -1034,267 +921,6 @@ int calculateSteeringCorrection() {
   correction = constrain(correction, -MAX_STEERING_CORRECTION, MAX_STEERING_CORRECTION);
   
   return correction;
-}
-
-// ==================== KALMAN FILTER IMPLEMENTATION ====================
-// Kalman filter variables for sensor reading smoothing
-double last_distance_est = 0;
-double last_distance_var = 999;
-double process_noise = 10;      // Process noise - higher values follow changes faster
-double sensor_noise = 5;        // Sensor noise - higher values means less trust in measurements
-
-// Kalman filter function for smoothing sensor readings
-double kalmanFilterDistance(double rawDistance) {
-  // If this is an invalid reading, return the last estimate
-  if (rawDistance <= 0) return last_distance_est;
-  
-  // Prediction step
-  double a_priori_est = last_distance_est;  
-  double a_priori_var = last_distance_var + process_noise; 
-
-  // Update step
-  double kalman_gain = a_priori_var / (a_priori_var + sensor_noise);
-  double a_post_est = a_priori_est + kalman_gain * (rawDistance - a_priori_est);
-  double a_post_var = (1 - kalman_gain) * a_priori_var;
-  
-  // Store for next iteration
-  last_distance_var = a_post_var;
-  last_distance_est = a_post_est;
-  
-  return a_post_est;
-}
-
-// ==================== CONTROLLED MOVEMENT FUNCTIONS ====================
-// Constants for controlled movement
-const float TARGET_DISTANCE = 15.0;  // Target distance to maintain (cm)
-const float DISTANCE_TOLERANCE = 1.5;    // Tighter tolerance (was 2.0)
-const int MIN_SPEED = 80;                // Reduced min speed for more gradual approach (was 100)
-const int MAX_SPEED = 200;               // Reduced max speed (was 250)
-const float DISTANCE_GAIN = 3.0;         // Reduced gain for smoother approach (was 5.0)
-const float SLOW_APPROACH_THRESHOLD = 40.0; // Begin slowing down when within 40cm
-
-// Function to move forward with distance control
-void moveForwardWithDistanceControl(float targetDistance = TARGET_DISTANCE) {
-  // Get current distance and apply Kalman filter
-  ultrasonicSensor.moveToAngle(90); // Center the sensor
-  float rawDistance = ultrasonicSensor.getDistance();
-  float filteredDistance = kalmanFilterDistance(rawDistance);
-  
-  // Calculate the error (how far we are from desired distance)
-  float distanceError = filteredDistance - targetDistance;
-  
-  // Print debugging information
-  Serial.print("CONTROLLED MOVEMENT: Raw dist=");
-  Serial.print(rawDistance);
-  Serial.print("cm, Filtered=");
-  Serial.print(filteredDistance);
-  Serial.print("cm, Target=");
-  Serial.print(targetDistance);
-  Serial.print("cm, Error=");
-  Serial.println(distanceError);
-  
-  // Update movement state tracking
-  isMovingForward = false;
-  isMovingBackward = false;
-  
-  // If we're outside the tolerance range, adjust speed
-  if (abs(distanceError) > DISTANCE_TOLERANCE) {
-    // Variable gain based on distance - gentler at close range
-    float adaptive_gain = DISTANCE_GAIN;
-    if (abs(distanceError) < 10) {
-      adaptive_gain = DISTANCE_GAIN * 0.7; // Reduce gain when close
-    }
-    
-    // Calculate speed based on distance error with variable gain
-    int speed = (int)(distanceError * adaptive_gain);
-    
-    // Constrain speed within safe limits
-    speed = constrain(speed, MIN_SPEED, MAX_SPEED);
-    
-    // Apply additional proportional slowdown as we get closer to target
-    if (abs(distanceError) < SLOW_APPROACH_THRESHOLD) {
-      speed = (int)(speed * (abs(distanceError) / SLOW_APPROACH_THRESHOLD));
-      speed = constrain(speed, MIN_SPEED, MAX_SPEED);
-    }
-    
-    // Determine direction based on error
-    if (distanceError > 0) {
-      // Too far, move forward
-      forward(speed);
-      isMovingForward = true;
-      Serial.print("Moving FORWARD with controlled speed: ");
-      Serial.println(speed);
-    } else {
-      // Too close, move backward
-      reverse(speed);
-      isMovingBackward = true;
-      Serial.print("Moving BACKWARD with controlled speed: ");
-      Serial.println(speed);
-    }
-  } else {
-    // Within tolerance range, stop moving
-    stop();
-    Serial.println("Distance within tolerance - holding position");
-  }
-  
-  // Update position tracking
-  updatePosition();
-  
-  // Update map with sensor readings
-  updateMapWithObstacles();
-}
-
-// Function for controlled turning while maintaining distance
-void turnWithDistanceControl(bool turnLeft, float targetDistance = TARGET_DISTANCE) {
-  // Get current distance and apply Kalman filter
-  // Choose sensor angle based on turn direction for better visibility
-  int sensorAngle = turnLeft ? 105 : 75;
-  ultrasonicSensor.moveToAngle(sensorAngle);
-  
-  float rawDistance = ultrasonicSensor.getDistance();
-  float filteredDistance = kalmanFilterDistance(rawDistance);
-  
-  // Calculate turn and distance errors
-  float distanceError = filteredDistance - targetDistance;
-  
-  // Print debugging information
-  Serial.print("CONTROLLED TURN: Direction=");
-  Serial.print(turnLeft ? "LEFT" : "RIGHT");
-  Serial.print(", Angle=");
-  Serial.print(sensorAngle);
-  Serial.print("°, Filtered dist=");
-  Serial.print(filteredDistance);
-  Serial.print("cm, Target=");
-  Serial.print(targetDistance);
-  Serial.print("cm, Error=");
-  Serial.println(distanceError);
-  
-  // Calculate speeds for turning
-  int baseSpeed = TURNING_SPEED;
-  int distanceAdjustment = (int)(distanceError * DISTANCE_GAIN);
-  
-  // Constrain adjustment within reasonable limits
-  distanceAdjustment = constrain(distanceAdjustment, -50, 50);
-  
-  // Adjust turn speed based on distance
-  int adjustedSpeed = baseSpeed + distanceAdjustment;
-  adjustedSpeed = constrain(adjustedSpeed, MIN_SPEED, MAX_SPEED);
-  
-  // Execute the turn with the adjusted speed
-  if (turnLeft) {
-    ccw(adjustedSpeed);
-    Serial.print("Turning LEFT with controlled speed: ");
-  } else {
-    cw(adjustedSpeed);
-    Serial.print("Turning RIGHT with controlled speed: ");
-  }
-  Serial.println(adjustedSpeed);
-}
-
-// Approach an object and maintain a specific distance from it
-void approachAndMaintainDistance(float targetDistance = TARGET_DISTANCE) {
-  Serial.println("APPROACHING OBJECT WITH CONTROLLED DISTANCE");
-  
-  // Initial full scan to find the closest object
-  performFullScan();
-  
-  // Get the angle of the closest object
-  ultrasonicSensor.moveToAngle(closestAngle);
-  
-  // Reset Kalman filter to improve initial response
-  last_distance_est = ultrasonicSensor.getDistance();
-  last_distance_var = 100;
-  
-  // Calculate how much we need to turn to face the object
-  int headingError = closestAngle - 90;
-  
-  // First, turn to face the object
-  if (abs(headingError) > 10) { // Smaller threshold for more precise alignment
-    Serial.print("Turning to face object at angle ");
-    Serial.println(closestAngle);
-    
-    if (headingError > 0) {
-      // Need to turn left
-      startProgressiveTurn(true, abs(headingError));
-    } else {
-      // Need to turn right
-      startProgressiveTurn(false, abs(headingError));
-    }
-    
-    // Wait for turn to complete
-    delay(TURN_INCREMENT_DURATION * 1.5); // Slightly longer to ensure turn completes
-    stop();
-  }
-  
-  // Now approach the object with controlled distance using improved adaptive speed
-  bool atTargetDistance = false;
-  int approachAttempts = 0;
-  const int MAX_APPROACH_ATTEMPTS = 25; // More attempts allowed
-  
-  while (!atTargetDistance && approachAttempts < MAX_APPROACH_ATTEMPTS) {
-    // Get current distance with Kalman filtering
-    ultrasonicSensor.moveToAngle(90);
-    float rawDistance = ultrasonicSensor.getDistance();
-    float filteredDistance = kalmanFilterDistance(rawDistance);
-    
-    // Calculate error
-    float distanceError = filteredDistance - targetDistance;
-    
-    Serial.print("APPROACH: Filtered dist=");
-    Serial.print(filteredDistance);
-    Serial.print("cm, Target=");
-    Serial.print(targetDistance);
-    Serial.print("cm, Error=");
-    Serial.println(distanceError);
-    
-    // Update movement state tracking
-    isMovingForward = false;
-    isMovingBackward = false;
-    
-    // Check if we're at target distance
-    if (abs(distanceError) <= DISTANCE_TOLERANCE) {
-      atTargetDistance = true;
-      stop();
-      Serial.println("TARGET DISTANCE REACHED!");
-    } else {
-      // Adaptive approach speed - slower when closer
-      float speedFactor = min(1.0, abs(distanceError) / 30.0);
-      speedFactor = max(0.3, speedFactor); // At least 30% of base speed
-      
-      // Move toward the target distance
-      if (distanceError > 0) {
-        // Too far, move forward
-        int speed = (int)(MIN_SPEED + speedFactor * (MAX_SPEED - MIN_SPEED));
-        forward(speed);
-        isMovingForward = true;
-        Serial.print("Moving FORWARD with adaptive speed: ");
-        Serial.println(speed);
-      } else {
-        // Too close, move backward
-        int speed = (int)(MIN_SPEED + speedFactor * (MAX_SPEED - MIN_SPEED));
-        reverse(speed);
-        isMovingBackward = true;
-        Serial.print("Moving BACKWARD with adaptive speed: ");
-        Serial.println(speed);
-      }
-      
-      // Small delay before next measurement
-      delay(100);
-    }
-    
-    // Update position tracking
-    updatePosition();
-    
-    // Update map with sensor readings
-    updateMapWithObstacles();
-    
-    approachAttempts++;
-  }
-  
-  // Final adjustment with precision control
-  moveForwardWithDistanceControl(targetDistance);
-  
-  Serial.println("FINISHED APPROACH - MAINTAINING POSITION");
 }
 
 // ==================== SETUP & LOOP FUNCTIONS ====================
@@ -1346,330 +972,5 @@ void loop() {
   react();
   
   // Minimal delay to prevent too frequent updates
-  delay(10);
-}
-
-// ==================== ROOM MAPPING SYSTEM ====================
-// Position tracking variables
-float robot_x_cm = 0;           // Robot's X position in cm
-float robot_y_cm = 0;           // Robot's Y position in cm
-float robot_heading_deg = 90;   // Robot's heading in degrees (0=east, 90=north, 180=west, 270=south)
-unsigned long last_position_update = 0;  // Time of last position update
-const int POSITION_UPDATE_INTERVAL = 200; // Update position every 200ms
-const float CM_PER_SECOND_FORWARD = 20.0; // Estimated cm/sec when moving at FIXED_SPEED
-const float DEG_PER_SECOND_TURNING = 90.0; // Estimated deg/sec when turning at TURNING_SPEED
-
-// Box dimensions in mm - adjust these to match your actual environment
-const int BOX_LENGTH_MM = 1200;  // Length of the box in mm (x-axis)
-const int BOX_WIDTH_MM = 2000;   // Width of the box in mm (y-axis)
-
-// Grid parameters
-const int GRID_CELL_SIZE_CM = 10; // Size of each grid cell in cm
-const int GRID_LENGTH = BOX_LENGTH_MM / 100; // Number of cells along length (x-axis)
-const int GRID_WIDTH = BOX_WIDTH_MM / 100;  // Number of cells along width (y-axis)
-
-// The grid storing state of each cell: 0=unknown, 1=visited, 2=obstacle
-byte grid[GRID_LENGTH][GRID_WIDTH] = {0};
-
-// Current exploration target
-int target_x_cm = -1;
-int target_y_cm = -1;
-bool has_target = false;
-
-// Function to update robot's position based on movement
-void updatePosition() {
-  unsigned long current_time = millis();
-  float elapsed_sec = (current_time - last_position_update) / 1000.0;
-  
-  if (elapsed_sec > 0) {
-    // Update position based on current movement state
-    if (isTurning) {
-      // Update heading based on turning direction
-      float heading_change = elapsed_sec * DEG_PER_SECOND_TURNING;
-      
-      if (turningLeft) {
-        robot_heading_deg += heading_change;
-      } else {
-        robot_heading_deg -= heading_change;
-      }
-      
-      // Normalize heading to 0-360 range
-      while (robot_heading_deg >= 360) robot_heading_deg -= 360;
-      while (robot_heading_deg < 0) robot_heading_deg += 360;
-    } else {
-      // For forward/backward movement, calculate position change
-      float distance_moved = 0;
-      
-      // Check what motion is currently happening
-      if (isMovingForward) {
-        distance_moved = elapsed_sec * CM_PER_SECOND_FORWARD;
-      } else if (isMovingBackward) {
-        distance_moved = -elapsed_sec * CM_PER_SECOND_FORWARD;
-      }
-      
-      // Convert heading to radians for trig functions
-      float heading_rad = robot_heading_deg * PI / 180.0;
-      
-      // Update x,y based on heading and distance moved
-      robot_x_cm += distance_moved * cos(heading_rad);
-      robot_y_cm += distance_moved * sin(heading_rad);
-      
-      // Constrain position to within box bounds
-      robot_x_cm = constrain(robot_x_cm, 0, BOX_LENGTH_MM / 10.0);
-      robot_y_cm = constrain(robot_y_cm, 0, BOX_WIDTH_MM / 10.0);
-    }
-    
-    // Mark current cell as visited
-    markGridCell(robot_x_cm, robot_y_cm, 1); // 1 = visited
-    
-    last_position_update = current_time;
-    
-    // Periodically report position
-    if (current_time % 2000 < 100) {
-      Serial.print("POSITION: X=");
-      Serial.print(robot_x_cm);
-      Serial.print(" cm, Y=");
-      Serial.print(robot_y_cm);
-      Serial.print(" cm, Heading=");
-      Serial.print(robot_heading_deg);
-      Serial.println("°");
-    }
-  }
-}
-
-// Function to mark cells in the grid (0=unknown, 1=visited, 2=obstacle)
-void markGridCell(float x_cm, float y_cm, byte value) {
-  // Convert cm coordinates to grid indices
-  int grid_x = (int)(x_cm / GRID_CELL_SIZE_CM);
-  int grid_y = (int)(y_cm / GRID_CELL_SIZE_CM);
-  
-  // Check bounds
-  if (grid_x >= 0 && grid_x < GRID_LENGTH && grid_y >= 0 && grid_y < GRID_WIDTH) {
-    grid[grid_x][grid_y] = value;
-  }
-}
-
-// Function to mark obstacles based on sensor readings
-void updateMapWithObstacles() {
-  // Get current angle of the sensor
-  int sensorAngle = ultrasonicSensor.getAngle();
-  
-  // Calculate absolute angle by combining robot heading with sensor angle
-  float absoluteAngle = robot_heading_deg + (sensorAngle - 90);
-  
-  // Normalize to 0-360
-  while (absoluteAngle >= 360) absoluteAngle -= 360;
-  while (absoluteAngle < 0) absoluteAngle += 360;
-  
-  // Convert to radians
-  float angleRad = absoluteAngle * PI / 180.0;
-  
-  // Get the distance reading
-  float distance = ultrasonicSensor.getDistance();
-  
-  // Check if it's a valid reading indicating an obstacle
-  if (distance > 0 && distance < 100) {  // Consider readings up to 100cm
-    // Calculate obstacle position relative to robot
-    float obstacle_x = robot_x_cm + distance * cos(angleRad);
-    float obstacle_y = robot_y_cm + distance * sin(angleRad);
-    
-    // Mark obstacle in grid
-    markGridCell(obstacle_x, obstacle_y, 2); // 2 = obstacle
-  }
-}
-
-// Find the nearest unexplored cell (similar to findNearestZero in Box class)
-bool findNearestUnexploredCell(int& out_x_cm, int& out_y_cm) {
-  float min_distance = 999.0;
-  bool found = false;
-  
-  // Scan the entire grid
-  for (int i = 0; i < GRID_LENGTH; i++) {
-    for (int j = 0; j < GRID_WIDTH; j++) {
-      // Check for unexplored cells
-      if (grid[i][j] == 0) {
-        // Convert grid indices to cm
-        float cell_x_cm = (i + 0.5) * GRID_CELL_SIZE_CM;
-        float cell_y_cm = (j + 0.5) * GRID_CELL_SIZE_CM;
-        
-        // Calculate distance from robot to this cell
-        float distance = sqrt(pow(cell_x_cm - robot_x_cm, 2) + pow(cell_y_cm - robot_y_cm, 2));
-        
-        // Check if this is closer than our current closest
-        if (distance < min_distance) {
-          min_distance = distance;
-          out_x_cm = cell_x_cm;
-          out_y_cm = cell_y_cm;
-          found = true;
-        }
-      }
-    }
-  }
-  
-  return found;
-}
-
-// Calculate heading needed to face a specific point
-float calculateHeadingToPoint(float target_x, float target_y) {
-  // Calculate vector from robot to target
-  float dx = target_x - robot_x_cm;
-  float dy = target_y - robot_y_cm;
-  
-  // Calculate heading in degrees
-  float heading = atan2(dy, dx) * 180.0 / PI;
-  
-  // Normalize to 0-360
-  while (heading < 0) heading += 360;
-  
-  return heading;
-}
-
-// Start exploring and mapping the environment
-void startExploration() {
-  Serial.println("Starting environment exploration and mapping");
-  in_exploration_mode = true;
-  
-  // Initialize robot position at center if not set
-  if (robot_x_cm == 0 && robot_y_cm == 0) {
-    robot_x_cm = BOX_LENGTH_MM / 20.0; // Start at middle of x-axis
-    robot_y_cm = BOX_WIDTH_MM / 20.0;  // Start at middle of y-axis
-  }
-  
-  // Mark current position as visited
-  markGridCell(robot_x_cm, robot_y_cm, 1);
-  
-  // Find first exploration target
-  updateExplorationTarget();
-}
-
-// Update the exploration target to the next unexplored area
-void updateExplorationTarget() {
-  if (findNearestUnexploredCell(target_x_cm, target_y_cm)) {
-    has_target = true;
-    Serial.print("New exploration target: X=");
-    Serial.print(target_x_cm);
-    Serial.print(" cm, Y=");
-    Serial.print(target_y_cm);
-    Serial.println(" cm");
-  } else {
-    has_target = false;
-    in_exploration_mode = false; // Stop exploration if everywhere is mapped
-    Serial.println("Exploration complete! Entire area has been mapped.");
-  }
-}
-
-// Navigate toward the current exploration target
-void navigateToExplorationTarget() {
-  if (!has_target) {
-    updateExplorationTarget();
-    if (!has_target) return; // No targets available
-  }
-  
-  // Calculate distance to target
-  float distance_to_target = sqrt(pow(target_x_cm - robot_x_cm, 2) + pow(target_y_cm - robot_y_cm, 2));
-  
-  // If we've reached target (within 20cm), get a new one
-  if (distance_to_target < 20) {
-    Serial.println("Reached exploration target!");
-    updateExplorationTarget();
-    return;
-  }
-  
-  // Calculate desired heading to target
-  float desired_heading = calculateHeadingToPoint(target_x_cm, target_y_cm);
-  
-  // Calculate heading error
-  float heading_error = desired_heading - robot_heading_deg;
-  
-  // Normalize heading error to -180 to +180
-  while (heading_error > 180) heading_error -= 360;
-  while (heading_error < -180) heading_error += 360;
-  
-  Serial.print("Target heading: ");
-  Serial.print(desired_heading);
-  Serial.print("°, Current: ");
-  Serial.print(robot_heading_deg);
-  Serial.print("°, Error: ");
-  Serial.println(heading_error);
-  
-  // If heading error is large, turn first
-  if (abs(heading_error) > 20) {
-    // Determine turn direction
-    if (heading_error > 0) {
-      // Need to turn counterclockwise
-      startProgressiveTurn(true, abs(heading_error));
-    } else {
-      // Need to turn clockwise
-      startProgressiveTurn(false, abs(heading_error));
-    }
-  } else {
-    // Heading is good enough, move forward with slight steering correction
-    int steeringCorrection = (int)(heading_error * 1.0); // Simple P controller
-    forwardWithSteering(SCAN_SPEED, steeringCorrection);
-  }
-}
-
-// Print current map to Serial (ASCII visualization)
-void printMap() {
-  Serial.println("\n===== ENVIRONMENT MAP =====");
-  
-  // Print column headers
-  Serial.print("    ");
-  for (int x = 0; x < GRID_LENGTH; x++) {
-    if (x % 5 == 0) { // Print column number every 5 cells
-      if (x < 10) Serial.print(" ");
-      Serial.print(x);
-      Serial.print(" ");
-    } else {
-      Serial.print("   ");
-    }
-  }
-  Serial.println();
-  
-  // Print the grid
-  for (int y = GRID_WIDTH - 1; y >= 0; y--) {
-    // Print row number
-    if (y < 10) Serial.print(" ");
-    Serial.print(y);
-    Serial.print(" |");
-    
-    // Print grid cells
-    for (int x = 0; x < GRID_LENGTH; x++) {
-      char cellChar = ' ';
-      
-      // Determine character based on cell value
-      if (grid[x][y] == 0) cellChar = '.'; // Unknown
-      else if (grid[x][y] == 1) cellChar = ' '; // Visited (empty space)
-      else if (grid[x][y] == 2) cellChar = '#'; // Obstacle
-      
-      // Mark robot position
-      int robot_grid_x = (int)(robot_x_cm / GRID_CELL_SIZE_CM);
-      int robot_grid_y = (int)(robot_y_cm / GRID_CELL_SIZE_CM);
-      if (x == robot_grid_x && y == robot_grid_y) {
-        // Show robot direction with an arrow
-        if (robot_heading_deg >= 315 || robot_heading_deg < 45) cellChar = '>'; // East
-        else if (robot_heading_deg >= 45 && robot_heading_deg < 135) cellChar = '^'; // North
-        else if (robot_heading_deg >= 135 && robot_heading_deg < 225) cellChar = '<'; // West
-        else cellChar = 'v'; // South
-      }
-      
-      // Show the cell
-      Serial.print(cellChar);
-      Serial.print("  ");
-    }
-    Serial.println("|");
-  }
-  
-  // Print bottom border
-  Serial.print("    ");
-  for (int x = 0; x < GRID_LENGTH; x++) {
-    Serial.print("---");
-  }
-  Serial.println();
-  
-  // Print legend
-  Serial.println("Legend: '.' = Unknown, ' ' = Empty, '#' = Obstacle");
-  Serial.println("        '^' = Robot facing North, '>' = Robot facing East");
-  Serial.println("        'v' = Robot facing South, '<' = Robot facing West");
-  Serial.println("----------------------------------------------------------");
+  delay(0);
 }
