@@ -13,7 +13,8 @@ const int ECHO_PIN = 49;
 
 // ==================== CONSTANTS ====================
 const int MAX_SPEED = 250;        // Maximum allowed speed
-const float DISTANCE_TOLERANCE = 5.0;  // Tolerance in cm
+const float SIDE_TOLERANCE = 5.0; // Tolerance for side distance (cm)
+const float VERT_TOLERANCE = 7.0; // Tolerance for vertical distance (cm)
 const float K_VALUE = 5.0;        // Proportional control constant
 
 // ==================== GLOBAL OBJECTS ====================
@@ -23,67 +24,68 @@ Servo rightRearMotor;
 Servo rightFrontMotor;
 Servo sensorServo;
 
-// ==================== ULTRASONIC SENSOR CLASS ====================
-class UltrasonicSensor {
-public:
-  UltrasonicSensor(Servo& servo, int trigPin, int echoPin)
-      : myservo_(servo), trigPin_(trigPin), echoPin_(echoPin) {
-    pinMode(trigPin_, OUTPUT);
-    pinMode(echoPin_, INPUT);
-  }
+// ==================== FUNCTION DECLARATIONS ====================
+float getDistance();
+void setSensorAngle(int angle);
+void stopMotors();
+void strafeLeft(int speed);
+void strafeRight(int speed);
+void moveForward(int speed);
+void moveBackward(int speed);
+void checkAndStrafeWall(bool isLeft, float targetDistance);
+void checkAndAdjustVertical(float targetDistance);
 
-  void initialize() {
-    myservo_.write(90);
-    delay(100);
-  }
-
-  float getDistance() {
-    // Take multiple readings and average them
-    const int numReadings = 3;
-    float sum = 0;
-    int validCount = 0;
+// ==================== ULTRASONIC SENSOR FUNCTIONS ====================
+/**
+ * Get distance from ultrasonic sensor
+ * @return Distance in centimeters, or -1 if invalid reading
+ */
+float getDistance() {
+  // Take multiple readings and average them
+  const int numReadings = 3;
+  float sum = 0;
+  int validCount = 0;
+  
+  for (int i = 0; i < numReadings; i++) {
+    // Send pulse
+    digitalWrite(TRIG_PIN, LOW);
+    delayMicroseconds(2);
+    digitalWrite(TRIG_PIN, HIGH);
+    delayMicroseconds(10);
+    digitalWrite(TRIG_PIN, LOW);
     
-    for (int i = 0; i < numReadings; i++) {
-      // Send pulse
-      digitalWrite(trigPin_, LOW);
-      delayMicroseconds(2);
-      digitalWrite(trigPin_, HIGH);
-      delayMicroseconds(10);
-      digitalWrite(trigPin_, LOW);
-      
-      // Wait for echo
-      unsigned long duration = pulseIn(echoPin_, HIGH, 30000);
-      
-      // Calculate distance
-      if (duration > 0) {
-        float distance = duration / 58.0;
-        if (distance > 0 && distance < 400) {
-          sum += distance;
-          validCount++;
-        }
+    // Wait for echo
+    unsigned long duration = pulseIn(ECHO_PIN, HIGH, 30000);
+    
+    // Calculate distance
+    if (duration > 0) {
+      float distance = duration / 58.0;
+      if (distance > 0 && distance < 400) {
+        sum += distance;
+        validCount++;
       }
-      
-      delay(10);
     }
     
-    return (validCount > 0) ? (sum / validCount) : -1;
+    delay(10);
   }
+  
+  return (validCount > 0) ? (sum / validCount) : -1;
+}
 
-  void moveToAngle(int angle) {
-    if (angle >= 0 && angle <= 180) {
-      myservo_.write(angle);
-      delay(100);
-    }
-  }
-
-private:
-  Servo& myservo_;
-  int trigPin_;
-  int echoPin_;
-};
-
-// Create sensor object
-UltrasonicSensor ultrasonicSensor(sensorServo, TRIG_PIN, ECHO_PIN);
+/**
+ * Set sensor angle
+ * @param angle - Angle in degrees (0 to 180)
+ */
+void setSensorAngle(int angle) {
+  // Constrain angle to valid range
+  angle = constrain(angle, 0, 180);
+  
+  // Set servo position
+  sensorServo.write(angle);
+  
+  // Allow time for servo to reach position
+  delay(150);
+}
 
 // ==================== MOTOR CONTROL FUNCTIONS ====================
 void setupMotors() {
@@ -106,6 +108,8 @@ void stopMotors() {
   leftRearMotor.writeMicroseconds(1500);
   rightRearMotor.writeMicroseconds(1500);
   rightFrontMotor.writeMicroseconds(1500);
+  
+  Serial.println("Motors stopped");
 }
 
 void strafeLeft(int speed) {
@@ -114,6 +118,9 @@ void strafeLeft(int speed) {
   leftRearMotor.writeMicroseconds(1500 + speed);
   rightRearMotor.writeMicroseconds(1500 + speed);
   rightFrontMotor.writeMicroseconds(1500 - speed);
+  
+  Serial.print("Strafing left with speed: ");
+  Serial.println(speed);
 }
 
 void strafeRight(int speed) {
@@ -122,174 +129,204 @@ void strafeRight(int speed) {
   leftRearMotor.writeMicroseconds(1500 - speed);
   rightRearMotor.writeMicroseconds(1500 - speed);
   rightFrontMotor.writeMicroseconds(1500 + speed);
+  
+  Serial.print("Strafing right with speed: ");
+  Serial.println(speed);
+}
+
+void moveForward(int speed) {
+  speed = constrain(speed, 0, MAX_SPEED);
+  leftFrontMotor.writeMicroseconds(1500 + speed);
+  leftRearMotor.writeMicroseconds(1500 + speed);
+  rightRearMotor.writeMicroseconds(1500 - speed);
+  rightFrontMotor.writeMicroseconds(1500 - speed);
+  
+  Serial.print("Moving forward with speed: ");
+  Serial.println(speed);
+}
+
+void moveBackward(int speed) {
+  speed = constrain(speed, 0, MAX_SPEED);
+  leftFrontMotor.writeMicroseconds(1500 - speed);
+  leftRearMotor.writeMicroseconds(1500 - speed);
+  rightRearMotor.writeMicroseconds(1500 + speed);
+  rightFrontMotor.writeMicroseconds(1500 + speed);
+  
+  Serial.print("Moving backward with speed: ");
+  Serial.println(speed);
 }
 
 // ==================== WALL TRACKING FUNCTIONS ====================
-// Point sensor toward wall
-void pointToWall(bool isLeft) {
-  if (isLeft) {
-    ultrasonicSensor.moveToAngle(180); // Left side
-  } else {
-    ultrasonicSensor.moveToAngle(0);   // Right side
-  }
-}
-
-// Main wall strafing function
-void strafeAlongWall(bool isLeft) {
-  // Get reference distance
-  pointToWall(isLeft);
-  float targetDistance = ultrasonicSensor.getDistance();
+/**
+ * Check and adjust horizontal distance to wall with strafing
+ * @param isLeft - True if tracking left wall, false if tracking right wall
+ * @param targetDistance - Desired distance to maintain from wall (cm)
+ */
+void checkAndStrafeWall(bool isLeft, float targetDistance) {
+  Serial.println("\n--- HORIZONTAL WALL ADJUSTMENT ---");
   
-  if (targetDistance < 0) {
-    Serial.println("No valid initial distance reading");
+  // Point sensor to correct side
+  setSensorAngle(isLeft ? 180 : 0);
+  
+  // Get current distance
+  float currentDistance = getDistance();
+  if (currentDistance < 0) {
+    Serial.println("Invalid distance reading - aborting horizontal check");
     return;
   }
   
-  Serial.print("Target distance: ");
+  // Calculate error and required speed
+  float error = targetDistance - currentDistance;
+  int speed = (int)(K_VALUE * abs(error));
+  
+  // Ensure minimum effective speed
+  if (speed < 100 && speed > 0) {
+    speed = 100;
+  }
+  
+  // Limit maximum speed
+  speed = constrain(speed, 0, MAX_SPEED);
+  
+  // Display info
+  Serial.print("Side: ");
+  Serial.print(isLeft ? "LEFT" : "RIGHT");
+  Serial.print(", Current: ");
+  Serial.print(currentDistance);
+  Serial.print(" cm, Target: ");
   Serial.print(targetDistance);
-  Serial.println(" cm");
+  Serial.print(" cm, Error: ");
+  Serial.print(error);
+  Serial.print(" cm, Speed: ");
+  Serial.println(speed);
   
-  // Main control loop
-  unsigned long startTime = millis();
-  const unsigned long TIMEOUT = 15000; // 15 second timeout
+  // Check if we're within tolerance
+  if (abs(error) <= SIDE_TOLERANCE) {
+    Serial.println("Side distance within tolerance - holding position");
+    stopMotors();
+    return;
+  }
   
-  while (millis() - startTime < TIMEOUT) {
-    // Measure current distance
-    pointToWall(isLeft);
-    float currentDistance = ultrasonicSensor.getDistance();
-    
-    // Skip invalid readings
-    if (currentDistance < 0) {
-      delay(100);
-      continue;
-    }
-    
-    // Calculate error and control speed
-    float error = targetDistance - currentDistance;
-    int speed = (int)(K_VALUE * abs(error));
-    
-    // Ensure minimum effective speed
-    if (speed < 100 && speed > 0) {
-      speed = 100;
-    }
-    
-    // Limit maximum speed
-    speed = constrain(speed, 0, MAX_SPEED);
-    
-    // Display info
-    Serial.print("Current: ");
-    Serial.print(currentDistance);
-    Serial.print(" cm, Error: ");
-    Serial.print(error);
-    Serial.print(" cm, Speed: ");
-    Serial.println(speed);
-    
-    // Check if we're within tolerance
-    if (abs(error) <= DISTANCE_TOLERANCE) {
-      Serial.println("Within tolerance - holding position");
-      stopMotors();
-      delay(500);
-      continue;
-    }
-    
-    // Apply movement based on error
-    if (isLeft) {
-      // For left wall
-      if (error > 0) {
-        // Too close to wall - strafe right
-        Serial.println("Strafing right (away from wall)");
-        strafeRight(speed);
-      } else {
-        // Too far from wall - strafe left
-        Serial.println("Strafing left (toward wall)");
-        strafeLeft(speed);
-      }
+  // Apply movement based on error
+  if (isLeft) {
+    // For left wall
+    if (error > 0) {
+      // Too close to wall - strafe right
+      Serial.println("Too close to LEFT wall - strafing RIGHT");
+      strafeRight(speed);
+      delay(500);  // Move for half a second
+      stopMotors(); // Stop to reassess
     } else {
-      // For right wall
-      if (error > 0) {
-        // Too close to wall - strafe left
-        Serial.println("Strafing left (away from wall)");
-        strafeLeft(speed);
-      } else {
-        // Too far from wall - strafe right
-        Serial.println("Strafing right (toward wall)");
-        strafeRight(speed);
-      }
+      // Too far from wall - strafe left
+      Serial.println("Too far from LEFT wall - strafing LEFT");
+      strafeLeft(speed);
+      delay(500);  // Move for half a second
+      stopMotors(); // Stop to reassess
     }
-    
-    // Short delay for sensor update
-    delay(100);
-  }
-  
-  // Stop when done
-  stopMotors();
-  Serial.println("Wall tracking complete");
-}
-
-// ==================== ULTRASONIC SENSOR STANDALONE FUNCTIONS ====================
-
-/**
- * Get distance from ultrasonic sensor
- * @param trigPin - Arduino pin connected to sensor's TRIG pin
- * @param echoPin - Arduino pin connected to sensor's ECHO pin
- * @return Distance in centimeters, or -1 if invalid reading
- */
-float getUltrasonicDistance(int trigPin, int echoPin) {
-  // Take multiple readings and average them for reliability
-  const int numReadings = 3;
-  float sum = 0;
-  int validCount = 0;
-  
-  for (int i = 0; i < numReadings; i++) {
-    // Ensure trigger is LOW to start
-    digitalWrite(trigPin, LOW);
-    delayMicroseconds(2);
-    
-    // Send 10μs trigger pulse
-    digitalWrite(trigPin, HIGH);
-    delayMicroseconds(10);
-    digitalWrite(trigPin, LOW);
-    
-    // Measure the length of the echo pulse
-    unsigned long duration = pulseIn(echoPin, HIGH, 30000); // 30ms timeout
-    
-    // Convert to distance in cm (speed of sound = 343m/s = 34300cm/s)
-    // Echo time is round-trip, so divide by 2
-    // 1/58 is approximately 34300/2/1000000
-    if (duration > 0) {
-      float distance = duration / 58.0;
-      if (distance > 0 && distance < 400) { // Valid range check
-        sum += distance;
-        validCount++;
-      }
+  } else {
+    // For right wall
+    if (error > 0) {
+      // Too close to wall - strafe left
+      Serial.println("Too close to RIGHT wall - strafing LEFT");
+      strafeLeft(speed);
+      delay(500);  // Move for half a second
+      stopMotors(); // Stop to reassess
+    } else {
+      // Too far from wall - strafe right
+      Serial.println("Too far from RIGHT wall - strafing RIGHT");
+      strafeRight(speed);
+      delay(500);  // Move for half a second
+      stopMotors(); // Stop to reassess
     }
-    
-    delay(10); // Short delay between readings
   }
-  
-  // Return average of valid readings, or -1 if none
-  return (validCount > 0) ? (sum / validCount) : -1;
 }
 
 /**
- * Set servo angle for the ultrasonic sensor
- * @param servo - Servo object to control
- * @param angle - Angle in degrees (0 to 180)
- * @param waitTime - Optional time to wait for servo to reach position (ms)
+ * Check and adjust vertical (forward) distance to wall
+ * @param targetDistance - Desired forward distance to maintain from wall (cm)
  */
-void setUltrasonicSensorAngle(Servo &servo, int angle, int waitTime = 100) {
-  // Constrain angle to valid range
-  angle = constrain(angle, 0, 180);
+void checkAndAdjustVertical(float targetDistance) {
+  Serial.println("\n--- VERTICAL WALL ADJUSTMENT ---");
   
-  // Set servo position
-  servo.write(angle);
+  // Point sensor forward (90 degrees)
+  setSensorAngle(90);
   
-  // Allow time for servo to reach position
-  if (waitTime > 0) {
-    delay(waitTime);
+  // Get current distance
+  float currentDistance = getDistance();
+  if (currentDistance < 0) {
+    Serial.println("Invalid forward distance reading - aborting vertical check");
+    return;
+  }
+  
+  // Calculate error and required speed
+  float error = targetDistance - currentDistance;
+  int speed = (int)(K_VALUE * abs(error));
+  
+  // Ensure minimum effective speed
+  if (speed < 100 && speed > 0) {
+    speed = 100;
+  }
+  
+  // Limit maximum speed
+  speed = constrain(speed, 0, MAX_SPEED);
+  
+  // Display info
+  Serial.print("Forward distance - Current: ");
+  Serial.print(currentDistance);
+  Serial.print(" cm, Target: ");
+  Serial.print(targetDistance);
+  Serial.print(" cm, Error: ");
+  Serial.print(error);
+  Serial.print(" cm, Speed: ");
+  Serial.println(speed);
+  
+  // Check if we're within tolerance
+  if (abs(error) <= VERT_TOLERANCE) {
+    Serial.println("Forward distance within tolerance - holding position");
+    stopMotors();
+    return;
+  }
+  
+  // Apply movement based on error
+  if (error > 0) {
+    // Too close to wall - move backward
+    Serial.println("Too close to forward wall - moving BACKWARD");
+    moveBackward(speed);
+    delay(500);  // Move for half a second
+    stopMotors(); // Stop to reassess
+  } else {
+    // Too far from wall - move forward
+    Serial.println("Too far from forward wall - moving FORWARD");
+    moveForward(speed);
+    delay(500);  // Move for half a second
+    stopMotors(); // Stop to reassess
   }
 }
 
+/**
+ * Complete wall tracking cycle with horizontal and vertical checks
+ * @param isLeft - True if tracking left wall, false if tracking right wall
+ * @param sideTarget - Target distance from side wall (cm)
+ * @param forwardTarget - Target distance from forward wall (cm)
+ */
+void trackWallCompleteCycle(bool isLeft, float sideTarget, float forwardTarget) {
+  Serial.println("\n====== STARTING WALL TRACKING CYCLE ======");
+  Serial.print("Tracking ");
+  Serial.print(isLeft ? "LEFT" : "RIGHT");
+  Serial.println(" wall");
+  
+  // First check vertical position
+  checkAndAdjustVertical(forwardTarget);
+  delay(500);
+  
+  // Then check horizontal position
+  checkAndStrafeWall(isLeft, sideTarget);
+  delay(500);
+  
+  // Check vertical again to make sure it's still good
+  checkAndAdjustVertical(forwardTarget);
+  
+  Serial.println("====== WALL TRACKING CYCLE COMPLETE ======\n");
+}
 
 // ==================== SETUP & LOOP ====================
 void setup() {
@@ -298,29 +335,38 @@ void setup() {
   // Wait a moment for serial to connect
   delay(1000);
   
-  Serial.println("Wall Tracking Robot");
-  Serial.println("------------------");
+  Serial.println("\n===============================");
+  Serial.println("=  WALL TRACKING ROBOT v3.0   =");
+  Serial.println("===============================");
+  
+  // Initialize pins
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+  pinMode(LED_BUILTIN, OUTPUT);
   
   // Initialize servo
   sensorServo.attach(SERVO_PIN);
-  ultrasonicSensor.initialize();
+  setSensorAngle(90); // Start by looking forward
   
   // Initialize motors
   setupMotors();
   
-  Serial.println("Ready!");
+  // Brief delay to let everything stabilize
+  delay(1000);
+  
+  Serial.println("Robot ready!");
 }
 
 void loop() {
-  // Track left wall (true) or right wall (false)
-  strafeAlongWall(true);
-  
-  // Pause between runs
-  stopMotors();
-  delay(2000);
-  
-  // Flash LED to show end of cycle
+  // Blink LED to show we're starting
   digitalWrite(LED_BUILTIN, HIGH);
   delay(200);
   digitalWrite(LED_BUILTIN, LOW);
+  
+  // Run one complete tracking cycle
+  // Parameters: isLeft, sideTargetDistance, forwardTargetDistance
+  trackWallCompleteCycle(true, 20.0, 150.0);  // Track left wall
+  
+  // Pause between cycles
+  delay(1000);
 }
