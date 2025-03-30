@@ -1,5 +1,11 @@
 #include <Arduino.h>
 #include <Servo.h>
+// ==================== TUNING STRAFING VALUES ====================
+//adjust the motor speed values to get the robot to strafe straight
+const float strafe_motor_TL_speed = 1;
+const float strafe_motor_TR_speed = 0.993; 
+const float strafe_motor_BL_speed = 0.993;
+const float strafe_motor_BR_speed = 1;
 
 // ==================== PINS ====================
 // Motor pins
@@ -114,22 +120,20 @@ void stopMotors() {
 
 void strafeLeft(int speed) {
   speed = constrain(speed, 0, MAX_SPEED);
-  leftFrontMotor.writeMicroseconds(1500 - speed);
-  leftRearMotor.writeMicroseconds(1500 + speed);
-  rightRearMotor.writeMicroseconds(1500 + speed);
-  rightFrontMotor.writeMicroseconds(1500 - speed);
-  
+  leftFrontMotor.writeMicroseconds((1500 - speed) * strafe_motor_TL_speed);
+  leftRearMotor.writeMicroseconds((1500 + speed) * strafe_motor_BL_speed);
+  rightRearMotor.writeMicroseconds((1500 + speed) * strafe_motor_BR_speed);
+  rightFrontMotor.writeMicroseconds((1500 - speed) * strafe_motor_TR_speed);  
   Serial.print("Strafing left with speed: ");
   Serial.println(speed);
 }
 
 void strafeRight(int speed) {
   speed = constrain(speed, 0, MAX_SPEED);
-  leftFrontMotor.writeMicroseconds(1500 + speed);
-  leftRearMotor.writeMicroseconds(1500 - speed);
-  rightRearMotor.writeMicroseconds(1500 - speed);
-  rightFrontMotor.writeMicroseconds(1500 + speed);
-  
+  leftFrontMotor.writeMicroseconds((1500 + speed) * strafe_motor_TL_speed);
+  leftRearMotor.writeMicroseconds((1500 - speed) * strafe_motor_BL_speed);
+  rightRearMotor.writeMicroseconds((1500 - speed) * strafe_motor_BR_speed);
+  rightFrontMotor.writeMicroseconds((1500 + speed) * strafe_motor_TR_speed);  
   Serial.print("Strafing right with speed: ");
   Serial.println(speed);
 }
@@ -365,8 +369,17 @@ void loop() {
   
   // Run one complete tracking cycle
   // Parameters: isLeft, sideTargetDistance, forwardTargetDistance
-  trackWallCompleteCycle(true, 20.0, 150.0);  // Track left wall
+  trackWallCompleteCycle(true, 20.0, 50.0);  // Track left wall
+
+
+  // strafeRight(250); // Example strafe left for 1 second
+  // delay(3000);
+  // stopMotors();
+  // delay(300);
+  // strafeLeft(250); // Example strafe left for 1 second
   
-  // Pause between cycles
-  delay(1000);
+  // // Pause between cycles
+  // delay(3000);
+  // stopMotors();
+  // delay(3000);
 }
