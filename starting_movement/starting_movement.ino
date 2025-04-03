@@ -143,6 +143,18 @@ void loop(void)  //main loop
     case TEST:
       machine_state = test();
   };
+
+  int rawGyroValue = analogRead(gyroPin);  // Read raw gyro value
+  double filteredGyroValue = kalmanFilter(rawGyroValue);  // Apply Kalman filter
+
+  // Print both raw and filtered values to the serial monitor
+  SerialCom->print("Raw Gyro Value: ");
+  SerialCom->print(rawGyroValue);
+  SerialCom->print(" | Filtered Gyro Value: ");
+  SerialCom->println(filteredGyroValue);
+
+  delay(100);  // Add a small delay to avoid flooding the serial monitor
+
 }
 
 
@@ -280,10 +292,6 @@ STATE test() {
 
   // }
   */
-  rotate(90);
-  delay(2000);
-    rotate(-90);
-
 
   return STOPPED;
 }
@@ -621,6 +629,31 @@ bool checkAngle(float targetAngle) {
   // Check if the angle difference is within the threshold
   return angleDifference <= rotationThreshold;
 }
+
+// Kalman filter
+// update kalman gain
+// update state estimate
+// update state error estimate
+
+double kalmanFilter(double U) {
+
+        // constants (static)
+        static const double R = 40; // noise covariance
+        static const double H = 1.00; // measurement map scalar
+        static double Q = 10; // initial estimated covariance
+        static double P = 0; // initial error covariance (must be 0)
+        static double U_hat = 0; // iniial estimated state (assume we don't know)
+        static double K = 0; // initial kalman gain
+      
+        // begin 
+        K = P*H / (H * P * H + R); // calculate kalman gain, higher R means lower gain, but more filtered
+        U_hat = U_hat + K * (U - H * U_hat); // update state estimate
+      
+        // update error covariance
+        P = (1-K * H) * P + Q; // update error covariance
+      
+        return U_hat; // return estimated state
+      }      
 
 // Updated rotate function
 void rotate(int degrees) {
