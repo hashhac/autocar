@@ -54,6 +54,8 @@ const unsigned int MAX_DIST = 23200;
 // IR Sensor
 const int IR_LeftPIN = 4;
 const int IR_RightPIN = 5;
+const int IR_LeftPIN_Back = 6;
+const int IR_RightPIN_Back = 7;
 
 // Gyro Sensor
 int gyroPin = A3;
@@ -143,18 +145,6 @@ void loop(void)  //main loop
     case TEST:
       machine_state = test();
   };
-
-  int rawGyroValue = analogRead(gyroPin);  // Read raw gyro value
-  double filteredGyroValue = kalmanFilter(rawGyroValue);  // Apply Kalman filter
-
-  // Print both raw and filtered values to the serial monitor
-  SerialCom->print("Raw Gyro Value: ");
-  SerialCom->print(rawGyroValue);
-  SerialCom->print(" | Filtered Gyro Value: ");
-  SerialCom->println(filteredGyroValue);
-
-  delay(100);  // Add a small delay to avoid flooding the serial monitor
-
 }
 
 
@@ -209,7 +199,7 @@ STATE running() {
 }
 
 STATE test() {
-  /*
+
   // float sweep_dist[array_size];
   // float initial_dist = -1;
   // float avg_dist = 0;
@@ -217,7 +207,7 @@ STATE test() {
   // float driving_until_dist = 15;
   // int kp = 8;
   // int corner_angle = -1;
-  // int rotate_angle = 90;
+  // int rotate_angle = -90;
 
 
   // SerialCom->println("Start testing");
@@ -231,10 +221,10 @@ STATE test() {
 
 
   // for (int i = 0; i < 3; i++) {
-  // avg_dist += HC_SR04_range();
-  // delay(150);
+  //   avg_dist += HC_SR04_range();
+  //   delay(150);
   // }
-  // avg_dist = avg_dist/3;
+  // avg_dist = avg_dist / 3;
 
   // if (avg_dist > driving_until_dist) {
   //   forwardUntil(driving_until_dist, kp);
@@ -282,17 +272,22 @@ STATE test() {
   // // // // Measure with ultrasonic to find the longest wall
   // // // // Measure infront
   // SerialCom->println("Finding forward wall");
-  // wall_dist =  HC_SR04_range();
+  // wall_dist = HC_SR04_range();
   // if (wall_dist <= 150) {
   //   rotate(rotate_angle);
   //   wall_right = false;
   //   SerialCom->println("Wall on the Left");
   // } else {
   //   SerialCom->println("Wall on the Right");
-
   // }
-  */
 
+  // // rotate(90);
+  // // delay(2000);
+  // // rotate(-90);
+
+  myservo.write(0);
+  delay(2000);
+  move(20, 20, 0);
   return STOPPED;
 }
 
@@ -492,17 +487,32 @@ float med_ir_dist(int ir_pin) {
   float distance;
 
   analog_value = analogRead(ir_pin);
-  distance = (2118.6) / (analog_value - 20.072);
+  if ((analog_value > 110) && (analog_value <550)){
+    distance = (2118.6) / (analog_value - 20.072);
+  } else{
+    distance = -1;
+  }
 
   return distance;
 }
+
+float long_ir_dist(int ir_pin) {
+  int analog_value;
+  float distance;
+
+  analog_value = analogRead(ir_pin);
+  distance = (4261.4) / (analog_value - 61.06);
+
+  return distance;
+}
+
 
 void orientate() {
   float tolerance = 0.25;
   float ir_left, ir_right;
   speed_val = 90;
   int stable_count = 0;
-  int required_count = 1;
+  int required_count = 3;
 
 
   do {
@@ -598,7 +608,7 @@ void recalibrateGyro() {
 
 // Function to update the current angle using the gyroscope
 void updateCurrentAngle() {
-  int rawValue = analogRead(gyroPin);                                  // Read raw gyro value
+  int rawValue = analogRead(gyroPin);                                    // Read raw gyro value
   gyroRate = ((rawValue * gyroSupplyVoltage) / 1023) - gyroZeroVoltage;  // Calculate angular velocity
   float angularVelocity = gyroRate / gyroSensitivity;
 
@@ -629,31 +639,6 @@ bool checkAngle(float targetAngle) {
   // Check if the angle difference is within the threshold
   return angleDifference <= rotationThreshold;
 }
-
-// Kalman filter
-// update kalman gain
-// update state estimate
-// update state error estimate
-
-double kalmanFilter(double U) {
-
-        // constants (static)
-        static const double R = 40; // noise covariance
-        static const double H = 1.00; // measurement map scalar
-        static double Q = 10; // initial estimated covariance
-        static double P = 0; // initial error covariance (must be 0)
-        static double U_hat = 0; // iniial estimated state (assume we don't know)
-        static double K = 0; // initial kalman gain
-      
-        // begin 
-        K = P*H / (H * P * H + R); // calculate kalman gain, higher R means lower gain, but more filtered
-        U_hat = U_hat + K * (U - H * U_hat); // update state estimate
-      
-        // update error covariance
-        P = (1-K * H) * P + Q; // update error covariance
-      
-        return U_hat; // return estimated state
-      }      
 
 // Updated rotate function
 void rotate(int degrees) {
@@ -687,7 +672,7 @@ void rotate(int degrees) {
     delay(T);  // Delay for the loop time
   } while (!checkAngle(targetAngle));
 
-    stop();  // Stop the robot after reaching the target angle
+  stop();  // Stop the robot after reaching the target angle
   SerialCom->println("Rotation complete.");
 }
 
@@ -710,6 +695,18 @@ float constrainPwr(float pwr) {
 
   return pwr;
 }
+
+float constrainPwr(float pwr, float lower, float upper) {
+  if (pwr > upper) {
+    return upper;
+  } else if (pwr < lower) {
+    return lower;
+  }
+
+  return pwr;
+}
+
+
 
 void forwardUntil(int targetDistance, float kp) {
   // Set the speed for forward movement until robot is a set distance away
@@ -773,7 +770,100 @@ void forwardUntil(int targetDistance, float kp) {
 
 
 
+void move(float y_dist, float x_dist, float target_angle) {
+  recalibrateGyro();
+  float y_err, x_err, ang_err;
+  float current_y, current_x, current_ang, buffer_dist_x;
+  int y_pwr, x_pwr, ang_pwr;
+  float x_kp, y_kp, ang_kp;
+  float y_tolerance, x_tolerance, ang_tolerance;
+  float ir_left, ir_right;
 
+  x_kp = 40;
+  y_kp = 20;
+  ang_kp = 3;
+
+  y_tolerance = 1;
+  x_tolerance = 1;
+  ang_tolerance = 3;
+
+  current_y = 200;
+
+
+  do {
+    // // IR Sensor Check -- Y_dist Front and Back
+    //   if (y_dist < 0) {
+    //     // Back IR
+    //     current_y = long_ir_dist(); //sensor pin
+    //   } else {
+    //     // Front IR
+    //     current_y = mid_ir_dist();
+    //   }
+
+    if (y_dist > 0) {
+      ir_left = med_ir_dist(IR_LeftPIN);
+      ir_right = med_ir_dist(IR_RightPIN);
+      SerialCom->print("Left sensor: ");
+      SerialCom->println(ir_left);
+      SerialCom->print("Right sensor: ");
+      SerialCom->println(ir_right);
+    } else {
+      ir_left = long_ir_dist(IR_LeftPIN_Back);
+      ir_right = long_ir_dist(IR_RightPIN_Back);
+    }
+
+    if ((ir_left != -1)) {
+      /*if ((ir_right != -1)) {                  // either one is reading
+        current_y = (ir_left + ir_right) / 2;  //if one of them isn't reading need to change
+      } else {*/
+        current_y = (ir_left);
+    /*  }
+    } else {
+      if ((ir_right != -1)) {  // either one is reading
+        current_y = (ir_right);
+      }*/
+    } else {
+      current_y = 200;
+    }
+
+
+    // Ultra sonic
+    buffer_dist_x = HC_SR04_range();
+    if (buffer_dist_x != -1) {
+      current_x = buffer_dist_x;
+      // Serial.print("Current Distance: ");
+      // Serial.println(current_distance);
+    }
+
+    // Gyro
+    updateCurrentAngle();
+
+
+    // Error Values
+    y_err = -(abs(y_dist) - current_y);
+    x_err = x_dist - current_x;
+    ang_err = target_angle - currentAngle;
+    SerialCom->print("Y: ");
+    SerialCom->println(y_err);
+    SerialCom->print("X: ");
+    SerialCom->println(x_err);
+    SerialCom->print("Ang: ");
+    SerialCom->println(ang_err);
+
+    // Power!!!!
+    y_pwr = constrainPwr((y_kp * y_err), -200, 200);
+    x_pwr = constrainPwr((x_kp * x_err), -200, 200);
+    ang_pwr = constrainPwr((ang_kp * ang_err), -100, 100);
+    
+    left_font_motor.writeMicroseconds(1500 + y_pwr - x_pwr + ang_pwr);
+    left_rear_motor.writeMicroseconds(1500 + y_pwr + x_pwr + ang_pwr);
+    right_rear_motor.writeMicroseconds(1500 - y_pwr + x_pwr + ang_pwr);
+    right_font_motor.writeMicroseconds(1500 - y_pwr - x_pwr + ang_pwr);
+
+    delay(50);
+  } while ((abs(y_err) >= y_tolerance) || (abs(x_err) >= x_tolerance) || (abs(ang_err) >= ang_tolerance));
+  stop();
+}
 
 
 
